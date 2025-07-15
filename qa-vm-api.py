@@ -97,13 +97,15 @@ def _run_in_guest(
     대비해 재시도 로직을 넣었다. 각 재시도 사이에 Tools 준비 여부를 확인한다.
     """
 
+    # vmrun 명령 형식: vmrun -T ws -gu <USER> -gp <PASS> runProgramInGuest <VMX> <PROGRAM> [ARGS]
+    # 기존 구현은 -gu/-gp 옵션을 runProgramInGuest 뒤에 배치해 오류가 발생했다.
     cmd_base = [
-        "runProgramInGuest",
-        str(vmx),
         "-gu",
         GUEST_USER,
         "-gp",
         GUEST_PASS,
+        "runProgramInGuest",
+        str(vmx),
         program,
         *args,
     ]
