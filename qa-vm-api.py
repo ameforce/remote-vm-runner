@@ -125,11 +125,31 @@ def _run_in_guest(
 
 
 def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
-    """현재 Windows 가 자동으로 DHCP 갱신을 수행하므로 별도 재협상은 생략한다."""
-    msg = "네트워크 재협상 건너뜀 – Windows 자동 DHCP 대기"
-    logger.info(msg)
-    if on_progress:
-        on_progress(msg)
+    """Guest OS 내에서 DHCP 갱신·DNS 플러시를 시도한다.
+
+    각 명령 실행 결과의 stderr 를 캡처해 로깅하고, 실패해도 다음 단계로 넘어간다.
+    """
+    steps: list[tuple[str, list[str]]] = [
+        ("IP 해제", ["ipconfig", "/release"]),
+        ("DHCP 갱신", ["ipconfig", "/renew"]),
+        ("DNS 플러시", ["ipconfig", "/flushdns"]),
+    ]
+
+    log = lambda m: (logger.info(m), on_progress and on_progress(m))
+    log("네트워크 재협상 시작")
+    try:
+        wait_for_tools_ready(vmx, timeout=60, probe_interval=0.5, on_progress=on_progress)
+    except Exception as e:
+        log(f"VMware Tools 준비 확인 실패: {e}")
+
+    for title, cmd in steps:
+        log(f"{title} 실행 중…")
+        try:
+            _run_in_guest(vmx, cmd[0], *cmd[1:], timeout=60, retries=2)
+            log(f"{title} 완료")
+        except Exception as e:
+            log(f"{title} 실패: {e}")
+    log("네트워크 재협상 종료")
 
 
 app = FastAPI(title="QA VMware API", version="1.0.0")
@@ -157,6 +177,8 @@ def _run_vmrun(args: List[str], capture: bool = True, timeout: int = 120) -> str
         return ""
     except subprocess.CalledProcessError as exc:
         logger.error("vmrun stderr: %s", exc.stderr.strip())
+        logger.error("vmrun stdout: %s", exc.stdout.strip())
+        logger.error("vmrun cmd: %s", ' '.join(cmd))
         raise RuntimeError(f"vmrun failed: {exc.stderr.strip()}") from exc
 
 
