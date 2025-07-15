@@ -131,10 +131,11 @@ def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
 
     각 명령 실행 결과의 stderr 를 캡처해 로깅하고, 실패해도 다음 단계로 넘어간다.
     """
+    # runProgramInGuest 에서는 프로그램의 전체 경로 혹은 cmd.exe 로 우회 호출해야 한다.
     steps: list[tuple[str, list[str]]] = [
-        ("IP 해제", ["ipconfig", "/release"]),
-        ("DHCP 갱신", ["ipconfig", "/renew"]),
-        ("DNS 플러시", ["ipconfig", "/flushdns"]),
+        ("IP 해제", ["cmd.exe", "/c", "ipconfig", "/release"]),
+        ("DHCP 갱신", ["cmd.exe", "/c", "ipconfig", "/renew"]),
+        ("DNS 플러시", ["cmd.exe", "/c", "ipconfig", "/flushdns"]),
     ]
 
     log = lambda m: (logger.info(m), on_progress and on_progress(m))
