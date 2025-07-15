@@ -90,6 +90,7 @@ def _run_in_guest(
     *args: str,
     timeout: int = 60,
     retries: int = 3,
+    success_codes: set[int] | None = None,
 ) -> None:
     """Guest OS 내부에서 프로그램 실행.
 
@@ -110,11 +111,22 @@ def _run_in_guest(
         *args,
     ]
 
+    # 허용할 종료 코드 집합 (None 이면 {0})
+    if success_codes is None:
+        success_codes = {0}
+
     for attempt in range(1, retries + 1):
         try:
             _run_vmrun(cmd_base, capture=True, timeout=timeout)
             return
-        except Exception as e:
+        except RuntimeError as e:
+            msg = str(e)
+            m = re.search(r"exit code:\s*(\d+)", msg)
+            if m:
+                exit_code = int(m.group(1))
+                if exit_code in success_codes:
+                    logger.info("runProgramInGuest 허용 종료 코드(%d): %s", exit_code, msg)
+                    return
             logger.warning("runProgramInGuest 실패(%d/%d): %s", attempt, retries, e)
             if attempt == retries:
                 return
@@ -133,9 +145,9 @@ def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
     """
     # runProgramInGuest 에서는 프로그램의 전체 경로 혹은 cmd.exe 로 우회 호출해야 한다.
     steps: list[tuple[str, list[str]]] = [
-        ("IP 해제", ["cmd.exe", "/c", "ipconfig", "/release"]),
-        ("DHCP 갱신", ["cmd.exe", "/c", "ipconfig", "/renew"]),
-        ("DNS 플러시", ["cmd.exe", "/c", "ipconfig", "/flushdns"]),
+        ("IP 해제", [r"C:\\Windows\\System32\\ipconfig.exe", "/release"]),
+        ("DHCP 갱신", [r"C:\\Windows\\System32\\ipconfig.exe", "/renew"]),
+        ("DNS 플러시", [r"C:\\Windows\\System32\\ipconfig.exe", "/flushdns"]),
     ]
 
     log = lambda m: (logger.info(m), on_progress and on_progress(m))
@@ -148,7 +160,7 @@ def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
     for title, cmd in steps:
         log(f"{title} 실행 중…")
         try:
-            _run_in_guest(vmx, cmd[0], *cmd[1:], timeout=60, retries=2)
+            _run_in_guest(vmx, cmd[0], *cmd[1:], timeout=60, retries=2, success_codes={0,1})
             log(f"{title} 완료")
         except Exception as e:
             log(f"{title} 실패: {e}")
