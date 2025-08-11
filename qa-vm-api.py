@@ -713,7 +713,8 @@ def _watchdog_tick(policy: IdlePolicy) -> None:
             name = vmx.parent.name
             if active:
                 _IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
-        logger.info("자원 여유 충분(mem=%.1fGB, cpu=%.0f%%) – 종료 없음", avail, cpu_pct)
+        cpu_free_pct = max(0.0, 100.0 - float(cpu_pct))
+        logger.info("자원 여유 충분(free_mem=%.1fGB, free_cpu=%.0f%%) – 종료 없음", avail, cpu_free_pct)
         return
 
     for vmx in vmx_list:
@@ -749,7 +750,7 @@ def _watchdog_tick(policy: IdlePolicy) -> None:
             for victim in to_stop:
                 key2 = str(victim)
                 s2 = _IDLE_DB.get(key2) or IdleState(vm=victim.parent.name, vmx=str(victim), last_active_ts=now)
-                logger.info("자원 압박(mem=%.1fGB, cpu=%.0f%%) – 유휴 VM 종료: %s", avail, cpu_pct, victim)
+                logger.info("자원 압박(free_mem=%.1fGB, used_cpu=%.0f%%) – 유휴 VM 종료: %s", avail, cpu_pct, victim)
                 _IDLE_DB[key2] = IdleState(vm=s2.vm, vmx=s2.vmx, last_active_ts=s2.last_active_ts, shutting_down=True)
                 _shutdown_vm(victim, mode=policy.mode)
             break
