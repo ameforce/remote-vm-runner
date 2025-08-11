@@ -29,6 +29,7 @@ import ipaddress
 import socket
 import sys
 import threading
+from contextlib import asynccontextmanager
 
 if os.name == "nt":
     import winreg
@@ -220,7 +221,23 @@ def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
     log("네트워크 재협상 종료")
 
 
-app = FastAPI(title="QA VMware API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start watchdog thread at startup (forced ON)
+    policy = IdlePolicy(
+        enabled=True,
+        idle_minutes=5,
+        check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
+        mode=IDLE_SHUTDOWN_MODE,
+    )
+    t = threading.Thread(target=_watchdog_loop, args=(policy,), daemon=True)
+    t.start()
+    logger.info("Idle watchdog 스레드 시작됨 (forced ON)")
+    yield
+    # No teardown required
+
+
+app = FastAPI(title="QA VMware API", version="1.0.0", lifespan=lifespan)
 
 
 def _run_vmrun(args: List[str], capture: bool = True, timeout: int = 120) -> str:
@@ -308,7 +325,8 @@ def _get_host_cpu_percent() -> float:
         if os.name == "nt":
             # typeperf samples once; /sc 1 for 1-second, use shorter for responsiveness
             # We use a very short sample to reduce overhead.
-            cmd = ["typeperf", "-sc", "1", "\Processor(_Total)\% Processor Time"]
+            # Use raw string to avoid invalid escape sequence warning
+            cmd = ["typeperf", "-sc", "1", r"\Processor(_Total)\% Processor Time"]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
             if proc.returncode == 0:
                 # Parse last line like: "09/01/2025 17:50:58.123","12.345"
@@ -325,17 +343,7 @@ def _get_host_cpu_percent() -> float:
         return 0.0
 
 
-@app.on_event("startup")
-def _start_watchdog_if_enabled():
-    policy = IdlePolicy(
-        enabled=True,
-        idle_minutes=5,
-        check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
-        mode=IDLE_SHUTDOWN_MODE,
-    )
-    t = threading.Thread(target=_watchdog_loop, args=(policy,), daemon=True)
-    t.start()
-    logger.info("Idle watchdog 스레드 시작됨 (forced ON)")
+ 
 
 
 def vmx_from_name(name: str) -> Path:
