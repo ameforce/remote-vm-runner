@@ -17,7 +17,6 @@ def _load_api_module():
 
 
 def test_list_vms_endpoint(monkeypatch, tmp_path: Path):
-    # Prepare fake VM root
     root = tmp_path / "VMware"
     (root / "Windows Server 2025").mkdir(parents=True)
     (root / "Windows Server 2025" / "Windows Server 2025.vmx").write_text(".")
@@ -26,7 +25,6 @@ def test_list_vms_endpoint(monkeypatch, tmp_path: Path):
     (root / "MyVM" / "nested" / "Another.vmx").write_text(".")
 
     api = _load_api_module()
-    # Point API to fake root
     monkeypatch.setattr(api, "VM_ROOT", root)
     client = TestClient(api.app)
     resp = client.get("/vms")

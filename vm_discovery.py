@@ -5,12 +5,6 @@ from typing import Dict
 
 
 def _choose_vmx_for_directory(directory: Path) -> Path | None:
-    """Select a .vmx file for the given directory.
-
-    Preference order:
-    1) A .vmx whose stem matches the directory name (case/space-insensitive)
-    2) The first .vmx found in a deterministic order
-    """
     if not directory.is_dir():
         return None
 
@@ -29,12 +23,6 @@ def _choose_vmx_for_directory(directory: Path) -> Path | None:
 
 
 def discover_vms(root: Path) -> Dict[str, Path]:
-    """Discover VMs under `root`.
-
-    Returns a mapping: { directory_name: vmx_path }
-    Only immediate subdirectories of `root` are considered as VM names.
-    A .vmx is searched recursively within each subdirectory.
-    """
     mapping: dict[str, Path] = {}
     if not root.exists() or not root.is_dir():
         return mapping
@@ -49,11 +37,5 @@ def discover_vms(root: Path) -> Dict[str, Path]:
 
 
 def find_vmx_for_name(name: str, root: Path) -> Path | None:
-    """Find the .vmx Path for the VM whose directory name equals `name`.
-
-    Returns None when not found.
-    """
     mapping = discover_vms(root)
     return mapping.get(name)
-
-

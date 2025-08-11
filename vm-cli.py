@@ -234,7 +234,6 @@ def poll_task(task_id: str, expected: float | None):
 
 
 def main() -> None:
-    # VM 선택 단계
     try:
         choose_vm()
     except requests.RequestException as exc:

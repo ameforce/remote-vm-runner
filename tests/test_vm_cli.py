@@ -20,10 +20,8 @@ def _load_cli_module():
 def test_choose_vm_happy_path(monkeypatch):
     cli = _load_cli_module()
     fake_names = ["B", "A"]
-    # get_vm_list returns unsorted; choose should sort and present [A, B]
     monkeypatch.setattr(cli, "get_vm_list", lambda: fake_names)
 
-    # simulate user pressing Enter (choose first item => A)
     inputs = iter([""])
     monkeypatch.setattr(builtins, "input", lambda _: next(inputs))
 

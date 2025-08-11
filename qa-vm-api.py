@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 import ipaddress
 import socket
 import sys
+import threading
 
 if os.name == "nt":
     import winreg
@@ -84,6 +85,23 @@ EXCLUDE_SUBNETS = [ipaddress.ip_network(net.strip()) for net in _ex_env.split(',
 GUEST_USER = os.getenv("GUEST_USER", "administrator")
 GUEST_PASS = os.getenv("GUEST_PASS", "epapyrus12#$")
 
+ENABLE_IDLE_WATCHDOG = True
+IDLE_CHECK_INTERVAL_SEC = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "60"))
+IDLE_SHUTDOWN_MINUTES = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "30"))
+IDLE_SHUTDOWN_SECONDS = max(30, IDLE_SHUTDOWN_MINUTES * 60)
+IDLE_SHUTDOWN_MODE = os.getenv("IDLE_SHUTDOWN_MODE", "soft")
+RDP_PORT = int(os.getenv("RDP_PORT", "3389"))
+
+# Resource pressure thresholds
+MIN_AVAILABLE_MEM_GB = float(os.getenv("MIN_AVAILABLE_MEM_GB", "6"))
+MAX_SHUTDOWNS_PER_TICK = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
+CPU_PRESSURE_THRESHOLD_PCT = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "95"))
+CPU_SAMPLE_DURATION_SEC = float(os.getenv("CPU_SAMPLE_DURATION_SEC", "0.2"))
+CPU_CONSECUTIVE_TICKS = int(os.getenv("CPU_CONSECUTIVE_TICKS", "3"))
+
+# runtime counters
+_CPU_OVER_LIMIT_COUNT = 0
+
 
 def _run_in_guest(
     vmx: Path,
@@ -104,7 +122,6 @@ def _run_in_guest(
         *args,
     ]
 
-    # 허용할 종료 코드 집합 (None 이면 {0})
     if success_codes is None:
         success_codes = {0}
 
@@ -123,7 +140,6 @@ def _run_in_guest(
             logger.warning("runProgramInGuest 실패(%d/%d): %s", attempt, retries, e)
             if attempt == retries:
                 return
-            # Tools 준비 재확인 후 잠시 대기하고 재시도
             try:
                 wait_for_tools_ready(vmx, timeout=10, probe_interval=0.5)
             except Exception:
@@ -131,12 +147,56 @@ def _run_in_guest(
             time.sleep(2)
 
 
-def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
-    """Guest OS 내에서 DHCP 갱신·DNS 플러시를 시도한다.
+def _run_in_guest_capture(
+    vmx: Path,
+    program: str,
+    *args: str,
+    timeout: int = 30,
+) -> str:
+    """Run a program in guest and capture stdout.
 
-    각 명령 실행 결과의 stderr 를 캡처해 로깅하고, 실패해도 다음 단계로 넘어간다.
+    Best-effort: returns empty string on failure.
     """
-    # runProgramInGuest 에서는 프로그램의 전체 경로 혹은 cmd.exe 로 우회 호출해야 한다.
+    cmd_base = [
+        "-gu",
+        GUEST_USER,
+        "-gp",
+        GUEST_PASS,
+        "runProgramInGuest",
+        str(vmx),
+        program,
+        *args,
+    ]
+    try:
+        return _run_vmrun(cmd_base, capture=True, timeout=timeout)
+    except Exception as e:
+        logger.debug("run_in_guest_capture 실패: %s", e)
+        return ""
+
+
+def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
+    ps_cmd = (
+        f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue);"
+        " if($c){'YES'} else {'NO'}"
+    )
+    out = _run_in_guest_capture(vmx, r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-Command", ps_cmd, timeout=20)
+    if out:
+        if "YES" in out:
+            return True
+        if "NO" in out:
+            return False
+
+    out = _run_in_guest_capture(vmx, r"C:\\Windows\\System32\\quser.exe", timeout=15)
+    if out:
+        for line in out.splitlines():
+            if line.strip().lower().startswith("username"):
+                continue
+            if " active " in line.lower():
+                return True
+    return False
+
+
+def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
     steps: list[tuple[str, list[str]]] = [
         ("IP 해제", [r"C:\\Windows\\System32\\ipconfig.exe", "/release"]),
         ("DHCP 갱신", [r"C:\\Windows\\System32\\ipconfig.exe", "/renew"]),
@@ -190,11 +250,97 @@ def _run_vmrun(args: List[str], capture: bool = True, timeout: int = 120) -> str
         raise RuntimeError(f"vmrun failed: {exc.stderr.strip()}") from exc
 
 
+def _get_host_available_memory_gb() -> float:
+    """Return host available physical memory in GB (best-effort).
+
+    - On Windows, use GlobalMemoryStatusEx via ctypes.
+    - Else, try psutil if available. On failure, return a large value to avoid false pressure.
+    """
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            return float(stat.ullAvailPhys) / (1024 ** 3)
+        try:
+            import psutil  # type: ignore
+            return float(psutil.virtual_memory().available) / (1024 ** 3)
+        except Exception:
+            return 9999.0
+    except Exception:
+        return 9999.0
+
+
+def _is_pressure_high() -> tuple[bool, float, float]:
+    global _CPU_OVER_LIMIT_COUNT
+    avail = _get_host_available_memory_gb()
+    cpu_pct = _get_host_cpu_percent()
+    mem_pressure = avail < MIN_AVAILABLE_MEM_GB
+    if cpu_pct >= CPU_PRESSURE_THRESHOLD_PCT:
+        _CPU_OVER_LIMIT_COUNT += 1
+    else:
+        _CPU_OVER_LIMIT_COUNT = 0
+    cpu_pressure = _CPU_OVER_LIMIT_COUNT >= max(1, CPU_CONSECUTIVE_TICKS)
+    return ((mem_pressure or cpu_pressure), avail, cpu_pct)
+
+
+def _get_host_cpu_percent() -> float:
+    """Return recent CPU usage percent across all cores (best-effort).
+
+    On Windows, use typeperf for a short sample; else try psutil. Fallback to 0.
+    """
+    try:
+        if os.name == "nt":
+            # typeperf samples once; /sc 1 for 1-second, use shorter for responsiveness
+            # We use a very short sample to reduce overhead.
+            cmd = ["typeperf", "-sc", "1", "\Processor(_Total)\% Processor Time"]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            if proc.returncode == 0:
+                # Parse last line like: "09/01/2025 17:50:58.123","12.345"
+                lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+                if len(lines) >= 3:
+                    val = lines[-1].split(",")[-1].strip().strip('"')
+                    return float(val)
+        try:
+            import psutil  # type: ignore
+            return float(psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC))
+        except Exception:
+            return 0.0
+    except Exception:
+        return 0.0
+
+
+@app.on_event("startup")
+def _start_watchdog_if_enabled():
+    policy = IdlePolicy(
+        enabled=True,
+        idle_minutes=5,
+        check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
+        mode=IDLE_SHUTDOWN_MODE,
+    )
+    t = threading.Thread(target=_watchdog_loop, args=(policy,), daemon=True)
+    t.start()
+    logger.info("Idle watchdog 스레드 시작됨 (forced ON)")
+
+
 def vmx_from_name(name: str) -> Path:
-    # 정적 매핑 우선
     if name in VM_MAP:
         return VM_MAP[name]
-    # 동적 검색: C:\VMware 하위 디렉토리명 기반으로 vmx 탐색
     try:
         from vm_discovery import find_vmx_for_name
         vmx = find_vmx_for_name(name, VM_ROOT)
@@ -246,7 +392,6 @@ def _is_preferred_ip(ip_str: str) -> bool:
         return False
     return any(ip_obj in net for net in PREFERRED_SUBNETS)
 
-# VMware Tools 준비 대기
 def _tools_ready(vmx: Path) -> bool:
     try:
         state = _run_vmrun(["checkToolsState", str(vmx)], timeout=10)
@@ -411,6 +556,7 @@ class TaskInfo(BaseModel):
 
 
 TASKS: dict[str, TaskInfo] = {}
+_IDLE_DB: dict[str, IdleState] = {}
 
 
 class VMListItem(BaseModel):
@@ -421,6 +567,41 @@ class VMListItem(BaseModel):
 class VMListResponse(BaseModel):
     root: str
     vms: List[VMListItem]
+
+
+class IdlePolicy(BaseModel):
+    enabled: bool = Field(default=False, description="Enable idle shutdown watchdog")
+    idle_minutes: int = Field(default=5, description="Minutes of no RDP activity before shutdown (0 = immediate)")
+    check_interval_sec: int = Field(default=60, description="Watchdog tick interval seconds")
+    mode: str = Field(default="soft", description="Shutdown mode: soft|hard")
+
+
+class ResourcePolicy(BaseModel):
+    min_available_mem_gb: float = Field(default=6.0, description="When host available memory (GB) falls below this, reclaim idle VMs")
+    max_shutdowns_per_tick: int = Field(default=2, description="Max number of VMs to stop in a single sweep")
+    cpu_pressure_threshold_pct: int = Field(default=95, description="When CPU usage exceeds this percent, treat as pressure")
+    cpu_consecutive_ticks: int = Field(default=3, description="Number of consecutive ticks above threshold required to trigger CPU pressure")
+
+
+def _select_idle_vms_for_stop(candidates: list[Path]) -> list[Path]:
+    if not candidates:
+        return []
+    scored: list[tuple[float, Path]] = []
+    now = time.time()
+    for vmx in candidates:
+        key = str(vmx)
+        st = _IDLE_DB.get(key)
+        last = st.last_active_ts if st and st.last_active_ts is not None else 0.0
+        scored.append((last, vmx))
+    scored.sort(key=lambda x: (x[0], str(x[1]).lower()))
+    return [vmx for _, vmx in scored[: max(1, MAX_SHUTDOWNS_PER_TICK)]]
+
+
+class IdleState(BaseModel):
+    vm: str
+    vmx: str
+    last_active_ts: float | None = None
+    shutting_down: bool = False
 
 
 @app.get("/vms", response_model=VMListResponse)
@@ -454,6 +635,94 @@ def list_vms() -> VMListResponse:
         mapping = _fallback_discover(VM_ROOT)
     items = [VMListItem(name=k, vmx=str(v)) for k, v in mapping.items()]
     return VMListResponse(root=str(VM_ROOT), vms=items)
+
+
+def _shutdown_vm(vmx: Path, mode: str = "soft") -> None:
+    try:
+        if mode == "hard":
+            _run_vmrun(["stop", str(vmx), "hard"], timeout=30)
+        else:
+            _run_vmrun(["stop", str(vmx), "soft"], timeout=60)
+    except Exception as e:
+        logger.warning("VM 종료 실패(%s): %s", mode, e)
+
+
+def _watchdog_tick(policy: IdlePolicy) -> None:
+    try:
+        running_raw = _run_vmrun(["list"], timeout=10)
+        lines = [ln.strip() for ln in running_raw.splitlines() if ln.strip()]
+        vmx_list: list[Path] = []
+        for ln in lines[1:]:
+            p = Path(ln)
+            if p.suffix.lower() == ".vmx" and p.exists():
+                vmx_list.append(p)
+    except Exception:
+        vmx_list = []
+
+    now = time.time()
+    threshold_seconds = max(0, int(policy.idle_minutes) * 60)
+
+    # If no pressure, do not stop VMs; just maintain last_active timestamps
+    pressure, avail, cpu_pct = _is_pressure_high()
+    if not pressure:
+        for vmx in vmx_list:
+            active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
+            key = str(vmx)
+            name = vmx.parent.name
+            if active:
+                _IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
+        logger.info("자원 여유 충분(mem=%.1fGB, cpu=%.0f%%) – 종료 없음", avail, cpu_pct)
+        return
+
+    for vmx in vmx_list:
+        name = None
+        for k, v in VM_MAP.items():
+            if v == vmx:
+                name = k
+                break
+        if name is None:
+            name = vmx.parent.name
+
+        active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
+        key = str(vmx)
+        state = _IDLE_DB.get(key)
+        if active:
+            _IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
+            continue
+
+        # No active connection
+        if threshold_seconds == 0:
+            # immediate mode still requires pressure high per new policy
+            continue
+
+        if state is None or state.last_active_ts is None:
+            _IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now)
+            continue
+
+        idle_secs = now - state.last_active_ts
+        if idle_secs >= threshold_seconds and not state.shutting_down:
+            # never stop VMs that currently have any RDP connection
+            candidates = [v for v in vmx_list if not has_active_rdp_connections(v, rdp_port=RDP_PORT)]
+            to_stop = _select_idle_vms_for_stop(candidates)
+            for victim in to_stop:
+                key2 = str(victim)
+                s2 = _IDLE_DB.get(key2) or IdleState(vm=victim.parent.name, vmx=str(victim), last_active_ts=now)
+                logger.info("자원 압박(mem=%.1fGB, cpu=%.0f%%) – 유휴 VM 종료: %s", avail, cpu_pct, victim)
+                _IDLE_DB[key2] = IdleState(vm=s2.vm, vmx=s2.vmx, last_active_ts=s2.last_active_ts, shutting_down=True)
+                _shutdown_vm(victim, mode=policy.mode)
+            break
+
+
+def _watchdog_loop(policy: IdlePolicy) -> None:
+    logger.info("Idle watchdog 시작 – enabled=%s, idle=%dm, interval=%ss, mode=%s, mem_threshold=%.1fGB, cpu_threshold=%d%%@%dx, maxStops=%d",
+                policy.enabled, policy.idle_minutes, policy.check_interval_sec, policy.mode,
+                MIN_AVAILABLE_MEM_GB, CPU_PRESSURE_THRESHOLD_PCT, CPU_CONSECUTIVE_TICKS, MAX_SHUTDOWNS_PER_TICK)
+    while policy.enabled:
+        try:
+            _watchdog_tick(policy)
+        except Exception as e:
+            logger.warning("watchdog tick 오류: %s", e)
+        time.sleep(max(5, policy.check_interval_sec))
 
 
 @app.get("/snapshots", response_model=SnapshotListResponse)
@@ -577,6 +846,26 @@ def task_status(task_id: str):
     if task_id not in TASKS:
         raise HTTPException(404, "task not found")
     return TASKS[task_id]
+
+
+@app.get("/idle_policy", response_model=IdlePolicy)
+def get_idle_policy() -> IdlePolicy:
+    return IdlePolicy(
+        enabled=True,
+        idle_minutes=5,
+        check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
+        mode=IDLE_SHUTDOWN_MODE,
+    )
+
+
+@app.get("/resource_policy", response_model=ResourcePolicy)
+def get_resource_policy() -> ResourcePolicy:
+    return ResourcePolicy(
+        min_available_mem_gb=MIN_AVAILABLE_MEM_GB,
+        max_shutdowns_per_tick=MAX_SHUTDOWNS_PER_TICK,
+        cpu_pressure_threshold_pct=CPU_PRESSURE_THRESHOLD_PCT,
+        cpu_consecutive_ticks=CPU_CONSECUTIVE_TICKS,
+    )
 
 
 if __name__ == "__main__":
