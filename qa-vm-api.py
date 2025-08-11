@@ -73,6 +73,7 @@ VM_MAP = {
     "hwp2022": Path(r"C:\VMware\Windows Server 2022 - HWP 2022\HWP 2022.vmx"),
     "hwp2024": Path(r"C:\VMware\Windows Server 2025 - HWP 2024\HWP 2024.vmx"),
 }
+VM_ROOT = Path(os.getenv("VM_ROOT", r"C:\VMware"))
 IP_POLL_INTERVAL = 0.2
 IP_POLL_TIMEOUT = 120
 _pref_env = os.getenv("PREFERRED_SUBNETS", "192.168.0.0/22")
@@ -92,14 +93,6 @@ def _run_in_guest(
     retries: int = 3,
     success_codes: set[int] | None = None,
 ) -> None:
-    """Guest OS 내부에서 프로그램 실행.
-
-    VMware Tools 가 아직 초기화되지 않았거나 일시적으로 Guest Ops 채널이 끊긴 경우를
-    대비해 재시도 로직을 넣었다. 각 재시도 사이에 Tools 준비 여부를 확인한다.
-    """
-
-    # vmrun 명령 형식: vmrun -T ws -gu <USER> -gp <PASS> runProgramInGuest <VMX> <PROGRAM> [ARGS]
-    # 기존 구현은 -gu/-gp 옵션을 runProgramInGuest 뒤에 배치해 오류가 발생했다.
     cmd_base = [
         "-gu",
         GUEST_USER,
@@ -198,10 +191,18 @@ def _run_vmrun(args: List[str], capture: bool = True, timeout: int = 120) -> str
 
 
 def vmx_from_name(name: str) -> Path:
-    try:
+    # 정적 매핑 우선
+    if name in VM_MAP:
         return VM_MAP[name]
-    except KeyError as exc:
-        raise HTTPException(404, detail=f"Unknown VM '{name}'") from exc
+    # 동적 검색: C:\VMware 하위 디렉토리명 기반으로 vmx 탐색
+    try:
+        from vm_discovery import find_vmx_for_name
+        vmx = find_vmx_for_name(name, VM_ROOT)
+        if vmx is not None:
+            return vmx
+    except Exception:
+        pass
+    raise HTTPException(404, detail=f"Unknown VM '{name}'")
 
 
 def is_vm_running(vmx: Path) -> bool:
@@ -410,6 +411,49 @@ class TaskInfo(BaseModel):
 
 
 TASKS: dict[str, TaskInfo] = {}
+
+
+class VMListItem(BaseModel):
+    name: str
+    vmx: str
+
+
+class VMListResponse(BaseModel):
+    root: str
+    vms: List[VMListItem]
+
+
+@app.get("/vms", response_model=VMListResponse)
+def list_vms() -> VMListResponse:
+    def _fallback_discover(root: Path) -> dict[str, Path]:
+        mapping: dict[str, Path] = {}
+        if not root.exists() or not root.is_dir():
+            return mapping
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir():
+                continue
+            # prefer vmx stem == dirname (space-insensitive)
+            dir_key = entry.name.lower().replace(" ", "")
+            candidates = sorted(entry.rglob("*.vmx"))
+            if not candidates:
+                continue
+            chosen = None
+            for vmx in candidates:
+                if vmx.stem.lower().replace(" ", "") == dir_key:
+                    chosen = vmx
+                    break
+            if chosen is None:
+                chosen = candidates[0]
+            mapping[entry.name] = chosen
+        return mapping
+
+    try:
+        from vm_discovery import discover_vms
+        mapping = discover_vms(VM_ROOT)
+    except Exception:
+        mapping = _fallback_discover(VM_ROOT)
+    items = [VMListItem(name=k, vmx=str(v)) for k, v in mapping.items()]
+    return VMListResponse(root=str(VM_ROOT), vms=items)
 
 
 @app.get("/snapshots", response_model=SnapshotListResponse)

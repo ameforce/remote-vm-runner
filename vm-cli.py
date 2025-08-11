@@ -42,6 +42,20 @@ def get_snapshot_list() -> List[str]:
     return resp.json()["snapshots"]
 
 
+def get_vm_list() -> List[str]:
+    url = f"{API_BASE}/vms"
+    resp = requests.get(url, timeout=10)
+    if resp.status_code != 200:
+        logger.warning("서버 응답: %s", resp.status_code)
+        logger.warning("응답 내용: %s", resp.text)
+    resp.raise_for_status()
+    data = resp.json()
+    items = data.get("vms", [])
+    names = [item.get("name") for item in items if isinstance(item, dict) and item.get("name")]
+    names.sort()
+    return names
+
+
 def revert_to_snapshot(snapshot: str) -> str:
     url = f"{API_BASE}/revert"
     resp = requests.post(url, json={"vm": VM_NAME, "snapshot": snapshot}, timeout=300)
@@ -94,6 +108,18 @@ def choose(items: List[str]) -> str:
             if 0 <= sel < len(items):
                 return items[sel]
         print("잘못된 입력, 다시 시도하세요.")
+
+
+def choose_vm() -> str:
+    global VM_NAME
+    names = sorted(get_vm_list())
+    if not names:
+        raise SystemExit("사용 가능한 VM이 없습니다. 서버의 /vms 응답을 확인하세요.")
+    print("=== 사용할 VM 선택 ===")
+    selected = choose(names)
+    VM_NAME = selected
+    print(f"선택된 VM: {VM_NAME}")
+    return selected
 
 
 def create_rdp_file(ip: str, username: str = "administrator") -> str:
@@ -208,6 +234,13 @@ def poll_task(task_id: str, expected: float | None):
 
 
 def main() -> None:
+    # VM 선택 단계
+    try:
+        choose_vm()
+    except requests.RequestException as exc:
+        logger.error("VM 목록 조회 실패: %s", exc)
+        sys.exit(1)
+
     print(f"=== {VM_NAME} 스냅샷 목록 가져오는 중 ===")
     try:
         snaps = get_snapshot_list()
