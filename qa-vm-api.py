@@ -223,6 +223,13 @@ def renew_network(vmx: Path, on_progress: callable | None = None) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Strict dependency check: psutil is required for reliable CPU metrics
+    try:
+        import psutil  # noqa: F401
+    except Exception as e:
+        logger.error("Missing required dependency: psutil. Please install requirements.txt. (%s)", e)
+        sys.exit(1)
+
     # Start watchdog thread at startup (forced ON)
     policy = IdlePolicy(
         enabled=True,
@@ -319,28 +326,55 @@ def _is_pressure_high() -> tuple[bool, float, float]:
 def _get_host_cpu_percent() -> float:
     """Return recent CPU usage percent across all cores (best-effort).
 
-    On Windows, use typeperf for a short sample; else try psutil. Fallback to 0.
+    Order: psutil (preferred) → PowerShell Get-Counter → typeperf. Fallback 0.
+    Handles locale decimals.
     """
+    # 1) psutil if available
     try:
-        if os.name == "nt":
-            # typeperf samples once; /sc 1 for 1-second, use shorter for responsiveness
-            # We use a very short sample to reduce overhead.
-            # Use raw string to avoid invalid escape sequence warning
-            cmd = ["typeperf", "-sc", "1", r"\Processor(_Total)\% Processor Time"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        import psutil  # type: ignore
+        pct = float(psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC))
+        if pct >= 0.0:
+            return pct
+    except Exception:
+        pass
+
+    if os.name == "nt":
+        # 2) PowerShell Get-Counter
+        try:
+            ps_cmd = (
+                "($s=(Get-Counter '" + r"\Processor(_Total)\% Processor Time" + "' -SampleInterval 1 -MaxSamples 1).CounterSamples.CookedValue) | "
+                "Measure-Object -Average | ForEach-Object { [int][math]::Round($_.Average) }"
+            )
+            proc = subprocess.run([
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                ps_cmd,
+            ], capture_output=True, text=True, timeout=3)
             if proc.returncode == 0:
-                # Parse last line like: "09/01/2025 17:50:58.123","12.345"
+                out = proc.stdout.strip()
+                if out.isdigit():
+                    return float(int(out))
+        except Exception:
+            pass
+
+        # 3) typeperf CSV
+        try:
+            cmd = ["typeperf", "-sc", "1", r"\Processor(_Total)\% Processor Time"]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if proc.returncode == 0:
                 lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
                 if len(lines) >= 3:
-                    val = lines[-1].split(",")[-1].strip().strip('"')
-                    return float(val)
-        try:
-            import psutil  # type: ignore
-            return float(psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC))
+                    last = lines[-1]
+                    import re as _re
+                    m = _re.search(r"([0-9]+[\.,][0-9]+|[0-9]+)$", last)
+                    if m:
+                        val_str = m.group(1).replace(",", ".")
+                        return float(val_str)
         except Exception:
-            return 0.0
-    except Exception:
-        return 0.0
+            pass
+
+    return 0.0
 
 
  
