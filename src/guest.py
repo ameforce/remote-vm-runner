@@ -78,3 +78,37 @@ def run_in_guest_capture(
             exc,
         )
         return ""
+
+
+def run_script_in_guest_capture(
+    vmx: Path,
+    interpreter: str,
+    script: str,
+    *,
+    timeout: int = 30,
+) -> str:
+    """Run a script inside guest and capture its stdout via vmrun runScriptInGuest.
+
+    This is more reliable for capturing output than runProgramInGuest, which often
+    does not propagate the child process' stdout back to the host.
+    """
+    cmd_base: list[str] = [
+        "-gu",
+        GUEST_USER,
+        "-gp",
+        GUEST_PASS,
+        "runScriptInGuest",
+        str(vmx),
+        interpreter,
+        script,
+    ]
+    try:
+        return run_vmrun(cmd_base, capture=True, timeout=timeout)
+    except Exception as exc:
+        logger.debug(
+            "run_script_in_guest_capture failed: interpreter=%s vmx=%s error=%s",
+            interpreter,
+            vmx,
+            exc,
+        )
+        return ""

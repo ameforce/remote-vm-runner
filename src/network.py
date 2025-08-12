@@ -13,7 +13,7 @@ from .config import (
     RDP_PS_TIMEOUT_SEC,
     RDP_QUSER_TIMEOUT_SEC,
 )
-from .guest import run_in_guest, run_in_guest_capture
+from .guest import run_in_guest, run_in_guest_capture, run_script_in_guest_capture
 from .vmrun import run_vmrun
 
 
@@ -41,6 +41,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
     except Exception as exc:
         logger.debug("checkToolsState failed: %s", exc)
 
+    # Prefer runScriptInGuest to reliably capture stdout from within PS
     ps_cmd = (
         f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue);"
         " if($c){'YES'} else {'NO'}"
@@ -48,14 +49,12 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
     out = None
     ps_err: str | None = None
     try:
-        out = run_in_guest_capture(
+        out = run_script_in_guest_capture(
             vmx,
-            r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-            "-NoProfile",
-            "-Command",
-            ps_cmd,
+            r"powershell",
+            f"-NoProfile -Command {ps_cmd}",
             timeout=RDP_PS_TIMEOUT_SEC,
-        )
+        ).strip()
     except Exception as exc:
         ps_err = str(exc)
         logger.debug("RDP PS probe failed: %s", exc)
