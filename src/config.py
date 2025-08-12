@@ -46,7 +46,12 @@ IDLE_SHUTDOWN_MODE: str = os.getenv("IDLE_SHUTDOWN_MODE", "soft")
 IDLE_ONLY_ON_PRESSURE: bool = os.getenv("IDLE_ONLY_ON_PRESSURE", "true").strip().lower() in {"1", "true", "yes"}
 RDP_PORT: int = int(os.getenv("RDP_PORT", "3389"))
 
-MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "6"))
+ASSUME_ACTIVE_ON_FAILURE: bool = os.getenv("ASSUME_ACTIVE_ON_FAILURE", "true").strip().lower() in {"1", "true", "yes"}
+
+RDP_PS_TIMEOUT_SEC: int = int(os.getenv("RDP_PS_TIMEOUT_SEC", "20"))
+RDP_QUSER_TIMEOUT_SEC: int = int(os.getenv("RDP_QUSER_TIMEOUT_SEC", "15"))
+
+MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
 MAX_SHUTDOWNS_PER_TICK: int = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
 CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "95"))
 CPU_SAMPLE_DURATION_SEC: float = float(os.getenv("CPU_SAMPLE_DURATION_SEC", "0.2"))
