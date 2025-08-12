@@ -93,6 +93,31 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
 
     if not over_budget():
         try:
+            direct_out = run_in_guest_capture(
+                vmx,
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"if((Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue))"
+                    "{'YES'} else {'NO'}"
+                ),
+                timeout=RDP_PS_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            logger.debug("RDP PS(direct) probe failed: %s", exc)
+            direct_out = ""
+        if direct_out:
+            low = direct_out.strip().upper()
+            if "YES" in low:
+                logger.info("RDP active detected by PS(direct) – vmx=%s port=%s", vmx, rdp_port)
+                return True
+            if "NO" in low:
+                logger.debug("RDP inactive confirmed by PS(direct) – vmx=%s port=%s", vmx, rdp_port)
+                return False
+
+    if not over_budget():
+        try:
             guest_tmp = r"C:\\Temp\\rdp_probe.txt"
             ps_script = (
                 f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue); "
@@ -111,9 +136,11 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
                     with open(host_tmp, "rb") as f:
                         data = f.read().decode("ascii", errors="ignore").strip()
                     if "YES" in data:
+                        logger.debug("RDP active detected by PS(file) – vmx=%s port=%s", vmx, rdp_port)
                         os.remove(host_tmp)
                         return True
                     if "NO" in data:
+                        logger.debug("RDP inactive confirmed by PS(file) – vmx=%s port=%s", vmx, rdp_port)
                         os.remove(host_tmp)
                         return False
             finally:
@@ -132,6 +159,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
     if raw:
         low = raw.lower()
         if "rdpclip.exe" in low:
+            logger.debug("RDP active detected by process(rdpclip) – vmx=%s", vmx)
             return True
 
     ps_script = (
@@ -153,8 +181,10 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
         logger.debug("RDP PS probe failed: %s", exc)
     if out:
         if "YES" in out:
+            logger.debug("RDP active detected by PS(stdout) – vmx=%s port=%s", vmx, rdp_port)
             return True
         if "NO" in out:
+            logger.debug("RDP inactive confirmed by PS(stdout) – vmx=%s port=%s", vmx, rdp_port)
             return False
 
     q_out = None
@@ -171,6 +201,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
             if low.startswith("username"):
                 continue
             if any(k in low for k in keywords):
+                logger.debug("RDP active detected by quser – vmx=%s", vmx)
                 return True
 
     try:
@@ -183,6 +214,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
         for line in q2_out.splitlines():
             low = line.strip().lower()
             if any(k in low for k in keywords):
+                logger.debug("RDP active detected by query user – vmx=%s", vmx)
                 return True
 
     try:
@@ -192,6 +224,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
         qw_out = ""
     if qw_out:
         if "active" in qw_out.lower() or "활성" in qw_out.lower():
+            logger.debug("RDP active detected by qwinsta – vmx=%s", vmx)
             return True
 
     try:
@@ -205,6 +238,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
         logger.debug("RDP netstat probe failed: %s", exc)
         ns_out = ""
     if ns_out and ns_out.strip():
+        logger.debug("RDP active detected by netstat – vmx=%s port=%s", vmx, rdp_port)
         return True
 
     if ASSUME_ACTIVE_ON_FAILURE:
@@ -217,7 +251,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
             if ip:
                 try:
                     with socket.create_connection((ip, rdp_port), timeout=TCP_PROBE_TIMEOUT_SEC):
-                        logger.warning(
+                        logger.debug(
                             "RDP status inconclusive – TCP probe succeeded; assuming ACTIVE: vmx=%s ip=%s port=%s",
                             vmx,
                             ip,
@@ -238,7 +272,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
             diag = f"whoami={'none' if not who else who.strip()}"
         except Exception as exc:
             diag = f"whoami_error={exc}"
-        logger.warning(
+        logger.debug(
             "RDP status inconclusive – assuming ACTIVE for safety: vmx=%s port=%s ps_out=%s quser_out=%s ps_err=%s quser_err=%s %s",
             vmx,
             rdp_port,
@@ -259,19 +293,6 @@ def has_active_rdp_connections_fast(vmx: Path, rdp_port: int = RDP_PORT) -> bool
             return True
     except Exception as exc:
         logger.debug("fast listProcessesInGuest failed: %s", exc)
-
-    try:
-        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=5)
-        ip = ip_raw.strip() if ip_raw else ""
-        if ip:
-            try:
-                with socket.create_connection((ip, rdp_port), timeout=min(0.5, TCP_PROBE_TIMEOUT_SEC)):
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
-
     return False
 
 
