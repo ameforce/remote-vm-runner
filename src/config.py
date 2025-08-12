@@ -51,6 +51,11 @@ ASSUME_ACTIVE_ON_FAILURE: bool = os.getenv("ASSUME_ACTIVE_ON_FAILURE", "true").s
 RDP_PS_TIMEOUT_SEC: int = int(os.getenv("RDP_PS_TIMEOUT_SEC", "20"))
 RDP_QUSER_TIMEOUT_SEC: int = int(os.getenv("RDP_QUSER_TIMEOUT_SEC", "15"))
 
+ASSUME_ACTIVE_IF_RDP_LISTENING: bool = os.getenv("ASSUME_ACTIVE_IF_RDP_LISTENING", "true").strip().lower() in {"1", "true", "yes"}
+TCP_PROBE_TIMEOUT_SEC: float = float(os.getenv("TCP_PROBE_TIMEOUT_SEC", "1.0"))
+
+RDP_CHECK_BUDGET_SEC: float = float(os.getenv("RDP_CHECK_BUDGET_SEC", "3.0"))
+
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
 MAX_SHUTDOWNS_PER_TICK: int = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
 CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "95"))

@@ -112,3 +112,22 @@ def run_script_in_guest_capture(
             exc,
         )
         return ""
+
+
+def copy_from_guest(vmx: Path, guest_path: str, host_path: str, *, timeout: int = 30) -> bool:
+    cmd_base: list[str] = [
+        "-gu",
+        GUEST_USER,
+        "-gp",
+        GUEST_PASS,
+        "CopyFileFromGuestToHost",
+        str(vmx),
+        guest_path,
+        host_path,
+    ]
+    try:
+        run_vmrun(cmd_base, capture=True, timeout=timeout)
+        return True
+    except Exception as exc:
+        logger.debug("copy_from_guest failed: src=%s dst=%s vmx=%s err=%s", guest_path, host_path, vmx, exc)
+        return False
