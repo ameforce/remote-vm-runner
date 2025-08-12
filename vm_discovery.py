@@ -1,41 +1,26 @@
+"""
+Backward-compatible shim to the new package API. Tests importing this module
+will continue to work while delegating to rvmrunner.discovery.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict
+import sys
 
+# Ensure src layout import
+from pathlib import Path as _Path
+BASE_DIR = _Path(__file__).parent
+ROOT_DIR = BASE_DIR
+SRC_DIR = ROOT_DIR / "src"
+sys.path.insert(0, str(ROOT_DIR))
+if SRC_DIR.is_dir():
+    sys.path.insert(0, str(SRC_DIR))
 
-def _choose_vmx_for_directory(directory: Path) -> Path | None:
-    if not directory.is_dir():
-        return None
+from discovery import (
+    _choose_vmx_for_directory as _choose_vmx_for_directory,  # re-export
+    discover_vms as discover_vms,
+    find_vmx_for_name as find_vmx_for_name,
+)
 
-    dir_key = directory.name.lower().replace(" ", "")
-
-    candidates: list[Path] = sorted(directory.rglob("*.vmx"))
-    if not candidates:
-        return None
-
-    for vmx in candidates:
-        stem_key = vmx.stem.lower().replace(" ", "")
-        if stem_key == dir_key:
-            return vmx
-
-    return candidates[0]
-
-
-def discover_vms(root: Path) -> Dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    if not root.exists() or not root.is_dir():
-        return mapping
-
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
-            continue
-        chosen = _choose_vmx_for_directory(entry)
-        if chosen is not None:
-            mapping[entry.name] = chosen
-    return mapping
-
-
-def find_vmx_for_name(name: str, root: Path) -> Path | None:
-    mapping = discover_vms(root)
-    return mapping.get(name)
