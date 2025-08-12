@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict
 
 from . import metrics
@@ -13,6 +14,7 @@ from .config import (
     MAX_SHUTDOWNS_PER_TICK,
     MIN_AVAILABLE_MEM_GB,
     RDP_PORT,
+    RDP_DETECTION_MODE,
 )
 from .models import IdlePolicy, IdleState
 from .network import has_active_rdp_connections
@@ -105,17 +107,32 @@ def watchdog_tick(policy: IdlePolicy) -> None:
     LAST_STATUS["cpu_idle_percent"] = max(0.0, 100.0 - float(cpu_pct_used))
     LAST_STATUS["interval_sec"] = int(getattr(policy, "check_interval_sec", 0) or 0)
 
-    for vmx in vmx_list:
-        active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
-        key = str(vmx)
-        name = vmx.parent.name
-        if active:
-            IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
+    active_map: dict[Path, bool] = {}
+    if vmx_list:
+        max_workers = min(8, max(1, len(vmx_list)))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rdpchk") as pool:
+            if RDP_DETECTION_MODE == "thorough":
+                checker = has_active_rdp_connections
+            else:
+                from .network import has_active_rdp_connections_fast as _fast
+                checker = _fast if RDP_DETECTION_MODE in {"fast", "hybrid"} else has_active_rdp_connections
+            future_to_vmx = {pool.submit(checker, vmx, RDP_PORT): vmx for vmx in vmx_list}
+            for fut in as_completed(future_to_vmx):
+                vmx = future_to_vmx[fut]
+                try:
+                    active = bool(fut.result())
+                except Exception:
+                    active = False
+                active_map[vmx] = active
+                key = str(vmx)
+                name = vmx.parent.name
+                if active:
+                    IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
 
     victims_total = 0
     for vmx in vmx_list:
         name = vmx.parent.name
-        active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
+        active = active_map.get(vmx, False)
         key = str(vmx)
         state = IDLE_DB.get(key)
         if active:
@@ -131,23 +148,49 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 
         idle_secs = now - state.last_active_ts
         if idle_secs >= threshold_seconds and not state.shutting_down:
-            # If configured to shutdown only under pressure, skip when no pressure
             if getattr(policy, "only_on_pressure", False) and not pressure:
                 continue
-            candidates = [v for v in vmx_list if not has_active_rdp_connections(v, rdp_port=RDP_PORT)]
+            candidates = [v for v in vmx_list if not active_map.get(v, False)]
+            if RDP_DETECTION_MODE == "hybrid":
+                from .network import has_active_rdp_connections as _thorough
+                rechecked: list[Path] = []
+                for v in candidates:
+                    try:
+                        if not _thorough(v, RDP_PORT):
+                            rechecked.append(v)
+                    except Exception:
+                        rechecked.append(v)
+                candidates = rechecked
             per_tick_limit = 1 if pressure else None
             to_stop = _select_idle_vms_for_stop(candidates, limit=per_tick_limit)
             for victim in to_stop:
                 key2 = str(victim)
                 s2 = IDLE_DB.get(key2) or IdleState(vm=victim.parent.name, vmx=str(victim), last_active_ts=now)
                 IDLE_DB[key2] = IdleState(vm=s2.vm, vmx=s2.vmx, last_active_ts=s2.last_active_ts, shutting_down=True)
+                if pressure:
+                    logger.warning(
+                        "watchdog: stopping VM due to %s – vm=%s vmx=%s mem_avail=%.2fGB cpu_used=%.1f%%",
+                        "idle+pressure",
+                        victim.parent.name,
+                        victim,
+                        LAST_STATUS.get("available_mem_gb") or -1.0,
+                        LAST_STATUS.get("cpu_used_percent") or -1.0,
+                    )
+                else:
+                    logger.info(
+                        "watchdog: stopping VM due to %s – vm=%s vmx=%s mem_avail=%.2fGB cpu_used=%.1f%%",
+                        "idle",
+                        victim.parent.name,
+                        victim,
+                        LAST_STATUS.get("available_mem_gb") or -1.0,
+                        LAST_STATUS.get("cpu_used_percent") or -1.0,
+                    )
                 _shutdown_vm(victim, mode=policy.mode)
             victims_total += len(to_stop)
             break
 
     LAST_STATUS["stopped_count"] = victims_total
 
-    # Build reason text for logging for better diagnostics
     stop_reason = "none"
     if victims_total > 0:
         if LAST_STATUS.get("pressure"):
@@ -158,8 +201,8 @@ def watchdog_tick(policy: IdlePolicy) -> None:
         stop_reason = "pressure-only"
 
     msg = (
-        f"watchdog: vms={LAST_STATUS['vm_count']} mem_avail={LAST_STATUS['available_mem_gb']:.2f}GB "
-        f"cpu_avail={LAST_STATUS['cpu_idle_percent']:.1f}% pressure={LAST_STATUS['pressure']} "
+        f"watchdog: vms={LAST_STATUS['vm_count']} | mem_avail={LAST_STATUS['available_mem_gb']:.2f}GB | "
+        f"cpu_avail={LAST_STATUS['cpu_idle_percent']:.1f}% | pressure={LAST_STATUS['pressure']}"
     )
     if victims_total > 0 or pressure:
         logger.warning(msg)
