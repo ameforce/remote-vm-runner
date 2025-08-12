@@ -38,7 +38,7 @@ LAST_STATUS: Dict[str, Any] = {
 }
 
 
-def _select_idle_vms_for_stop(candidates: list[Path]) -> list[Path]:
+def _select_idle_vms_for_stop(candidates: list[Path], limit: int | None = None) -> list[Path]:
     if not candidates:
         return []
     scored: list[tuple[float, Path]] = []
@@ -49,7 +49,8 @@ def _select_idle_vms_for_stop(candidates: list[Path]) -> list[Path]:
         last = st.last_active_ts if st and st.last_active_ts is not None else 0.0
         scored.append((last, vmx))
     scored.sort(key=lambda x: (x[0], str(x[1]).lower()))
-    return [vmx for _, vmx in scored[: max(1, MAX_SHUTDOWNS_PER_TICK)]]
+    max_to_stop = limit if limit is not None else MAX_SHUTDOWNS_PER_TICK
+    return [vmx for _, vmx in scored[: max(1, max_to_stop)]]
 
 
 def _is_pressure_high() -> tuple[bool, float, float]:
@@ -130,8 +131,12 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 
         idle_secs = now - state.last_active_ts
         if idle_secs >= threshold_seconds and not state.shutting_down:
+            # If configured to shutdown only under pressure, skip when no pressure
+            if getattr(policy, "only_on_pressure", False) and not pressure:
+                continue
             candidates = [v for v in vmx_list if not has_active_rdp_connections(v, rdp_port=RDP_PORT)]
-            to_stop = _select_idle_vms_for_stop(candidates)
+            per_tick_limit = 1 if pressure else None
+            to_stop = _select_idle_vms_for_stop(candidates, limit=per_tick_limit)
             for victim in to_stop:
                 key2 = str(victim)
                 s2 = IDLE_DB.get(key2) or IdleState(vm=victim.parent.name, vmx=str(victim), last_active_ts=now)
@@ -142,10 +147,19 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 
     LAST_STATUS["stopped_count"] = victims_total
 
+    # Build reason text for logging for better diagnostics
+    stop_reason = "none"
+    if victims_total > 0:
+        if LAST_STATUS.get("pressure"):
+            stop_reason = "idle+pressure"
+        else:
+            stop_reason = "idle"
+    elif LAST_STATUS.get("pressure"):
+        stop_reason = "pressure-only"
+
     msg = (
         f"watchdog: vms={LAST_STATUS['vm_count']} mem_avail={LAST_STATUS['available_mem_gb']:.2f}GB "
         f"cpu_avail={LAST_STATUS['cpu_idle_percent']:.1f}% pressure={LAST_STATUS['pressure']} "
-        f"stopped={LAST_STATUS['stopped_count']} mode={policy.mode} interval={LAST_STATUS['interval_sec']}s"
     )
     if victims_total > 0 or pressure:
         logger.warning(msg)

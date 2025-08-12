@@ -49,3 +49,4 @@ def test_pressure_reclaims_idle(monkeypatch, tmp_path: Path):
     assert calls
     assert str(vmx_active) not in calls
     assert set(calls).issubset({str(vmx_idle1), str(vmx_idle2)})
+    assert len(calls) == 1

@@ -15,6 +15,7 @@ from . import config as default_cfg
 from .config import (
     IDLE_CHECK_INTERVAL_SEC,
     IDLE_SHUTDOWN_MODE,
+    IDLE_ONLY_ON_PRESSURE,
     IP_POLL_INTERVAL,
     IP_POLL_TIMEOUT,
     VM_MAP,
@@ -130,6 +131,7 @@ def create_app(config_module=None) -> FastAPI:
             idle_minutes=5,
             check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
             mode=IDLE_SHUTDOWN_MODE,
+            only_on_pressure=IDLE_ONLY_ON_PRESSURE,
         )
         log.info("starting watchdog thread: interval=%ss idle_minutes=%s mode=%s", policy.check_interval_sec, policy.idle_minutes, policy.mode)
         t = threading.Thread(target=_watchdog_loop, args=(policy,), daemon=True)
@@ -264,6 +266,7 @@ def create_app(config_module=None) -> FastAPI:
             idle_minutes=5,
             check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
             mode=IDLE_SHUTDOWN_MODE,
+            only_on_pressure=IDLE_ONLY_ON_PRESSURE,
         )
 
     @app.get("/resource_policy", response_model=ResourcePolicy)

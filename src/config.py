@@ -43,6 +43,7 @@ IDLE_CHECK_INTERVAL_SEC: int = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "20"))
 IDLE_SHUTDOWN_MINUTES: int = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "30"))
 IDLE_SHUTDOWN_SECONDS: int = max(30, IDLE_SHUTDOWN_MINUTES * 60)
 IDLE_SHUTDOWN_MODE: str = os.getenv("IDLE_SHUTDOWN_MODE", "soft")
+IDLE_ONLY_ON_PRESSURE: bool = os.getenv("IDLE_ONLY_ON_PRESSURE", "true").strip().lower() in {"1", "true", "yes"}
 RDP_PORT: int = int(os.getenv("RDP_PORT", "3389"))
 
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "6"))

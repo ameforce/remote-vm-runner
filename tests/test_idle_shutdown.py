@@ -81,3 +81,62 @@ def test_has_active_rdp_connections_fallback_quser(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(network, "run_in_guest_capture", fake_run_in_guest_capture)
     assert network.has_active_rdp_connections(vmx) is True
+
+
+def test_idle_shutdown_only_on_pressure_skips_when_no_pressure(monkeypatch, tmp_path: Path):
+    vmx_file = tmp_path / "P.vmx"
+    vmx_file.write_text(".")
+
+    def fake_run_vmrun(args, capture=True, timeout=10):
+        if args and args[0] == "list":
+            return f"Total running VMs: 1\n{str(vmx_file)}\n"
+        raise AssertionError("unexpected vmrun args: %r" % (args,))
+
+    calls = []
+    def fake_shutdown(vmx, mode="soft"):
+        calls.append((str(vmx), mode))
+
+    # Host not under pressure
+    monkeypatch.setattr(idle, "_is_pressure_high", lambda: (False, 10.0, 10.0))
+    monkeypatch.setattr(idle, "run_vmrun", fake_run_vmrun)
+    monkeypatch.setattr(idle, "_shutdown_vm", fake_shutdown)
+    monkeypatch.setattr(idle, "has_active_rdp_connections", lambda vmx, rdp_port=3389: False)
+    idle.IDLE_DB.clear()
+
+    base = idle.time.time()
+    idle.IDLE_DB[str(vmx_file)] = idle.IdleState(vm="P", vmx=str(vmx_file), last_active_ts=base - 5*60 - 5)
+    monkeypatch.setattr(idle.time, "time", lambda: base)
+
+    idle.watchdog_tick(api.IdlePolicy(enabled=True, idle_minutes=5, check_interval_sec=1, mode="soft", only_on_pressure=True))
+
+    assert not calls, "should not shutdown when only_on_pressure=True and no pressure"
+
+
+def test_idle_shutdown_only_on_pressure_triggers_on_pressure(monkeypatch, tmp_path: Path):
+    vmx_file = tmp_path / "Q.vmx"
+    vmx_file.write_text(".")
+
+    def fake_run_vmrun(args, capture=True, timeout=10):
+        if args and args[0] == "list":
+            return f"Total running VMs: 1\n{str(vmx_file)}\n"
+        raise AssertionError("unexpected vmrun args: %r" % (args,))
+
+    calls = []
+    def fake_shutdown(vmx, mode="soft"):
+        calls.append((str(vmx), mode))
+
+    # Host under pressure
+    monkeypatch.setattr(idle, "_is_pressure_high", lambda: (True, 1.0, 97.0))
+    monkeypatch.setattr(idle, "run_vmrun", fake_run_vmrun)
+    monkeypatch.setattr(idle, "_shutdown_vm", fake_shutdown)
+    monkeypatch.setattr(idle, "has_active_rdp_connections", lambda vmx, rdp_port=3389: False)
+    idle.IDLE_DB.clear()
+
+    base = idle.time.time()
+    idle.IDLE_DB[str(vmx_file)] = idle.IdleState(vm="Q", vmx=str(vmx_file), last_active_ts=base - 5*60 - 5)
+    monkeypatch.setattr(idle.time, "time", lambda: base)
+
+    idle.watchdog_tick(api.IdlePolicy(enabled=True, idle_minutes=5, check_interval_sec=1, mode="soft", only_on_pressure=True))
+
+    assert calls, "should shutdown when only_on_pressure=True and pressure present"
+    assert calls[0][0] == str(vmx_file)
