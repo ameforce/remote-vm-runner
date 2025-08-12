@@ -56,6 +56,9 @@ TCP_PROBE_TIMEOUT_SEC: float = float(os.getenv("TCP_PROBE_TIMEOUT_SEC", "1.0"))
 
 RDP_CHECK_BUDGET_SEC: float = float(os.getenv("RDP_CHECK_BUDGET_SEC", "3.0"))
 
+ENABLE_TOOLS_SELF_HEAL: bool = os.getenv("ENABLE_TOOLS_SELF_HEAL", "true").strip().lower() in {"1", "true", "yes"}
+TOOLS_RESTART_COOLDOWN_SEC: int = int(os.getenv("TOOLS_RESTART_COOLDOWN_SEC", "600"))
+
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
 MAX_SHUTDOWNS_PER_TICK: int = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
 CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "95"))

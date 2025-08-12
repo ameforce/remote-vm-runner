@@ -17,6 +17,8 @@ from .config import (
     RDP_CHECK_BUDGET_SEC,
     GUEST_USER,
     GUEST_PASS,
+    ENABLE_TOOLS_SELF_HEAL,
+    TOOLS_RESTART_COOLDOWN_SEC,
 )
 from .guest import run_in_guest, run_in_guest_capture, run_script_in_guest_capture, copy_from_guest
 from .vmrun import run_vmrun
@@ -38,6 +40,41 @@ def is_preferred_ip(ip_str: str) -> bool:
     return any(ip_obj in net for net in PREFERRED_SUBNETS)
 
 
+_LAST_TOOLS_RESTART: dict[str, float] = {}
+
+
+def _maybe_restart_vmware_tools(vmx: Path) -> None:
+    if not ENABLE_TOOLS_SELF_HEAL:
+        return
+    key = str(vmx)
+    now = time.time()
+    last = _LAST_TOOLS_RESTART.get(key, 0.0)
+    if now - last < TOOLS_RESTART_COOLDOWN_SEC:
+        return
+    try:
+        run_in_guest(
+            vmx,
+            r"C:\\Windows\\System32\\sc.exe",
+            "stop",
+            "VMTools",
+            timeout=30,
+        )
+    except Exception as exc:
+        logger.debug("VMTools stop failed: %s", exc)
+    try:
+        run_in_guest(
+            vmx,
+            r"C:\\Windows\\System32\\sc.exe",
+            "start",
+            "VMTools",
+            timeout=30,
+        )
+        _LAST_TOOLS_RESTART[key] = now
+        logger.warning("Attempted VMware Tools restart inside guest: vmx=%s", vmx)
+    except Exception as exc:
+        logger.debug("VMTools start failed: %s", exc)
+
+
 def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
     start_ts = time.perf_counter()
     def over_budget() -> bool:
@@ -56,7 +93,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
 
     if not over_budget():
         try:
-            guest_tmp = r"C:\\Windows\\Temp\\rdp_probe.txt"
+            guest_tmp = r"C:\\Temp\\rdp_probe.txt"
             ps_script = (
                 f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue); "
                 "if($c){'YES'} else {'NO'} | Out-File -Encoding ASCII -Force '" + guest_tmp + "'"
@@ -99,8 +136,8 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
 
     ps_script = (
         f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue); "
-        "if($c){ Set-Content -Path 'C:\\Windows\\Temp\\rdp_probe.txt' -Value 'YES' -Encoding ASCII } "
-        "else{ Set-Content -Path 'C:\\Windows\\Temp\\rdp_probe.txt' -Value 'NO' -Encoding ASCII }"
+        "if($c){ Set-Content -Path 'C:\\Temp\\rdp_probe.txt' -Value 'YES' -Encoding ASCII } "
+        "else{ Set-Content -Path 'C:\\Temp\\rdp_probe.txt' -Value 'NO' -Encoding ASCII }"
     )
     out = None
     ps_err: str | None = None
@@ -108,7 +145,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
         out = run_script_in_guest_capture(
             vmx,
             r"C:\\Windows\\System32\\cmd.exe",
-            f"/c powershell -NoProfile -Command \"{ps_script}\"; Get-Content 'C:\\Windows\\Temp\\rdp_probe.txt'",
+            f"/c powershell -NoProfile -Command \"{ps_script}\"; Get-Content 'C:\\Temp\\rdp_probe.txt'",
             timeout=RDP_PS_TIMEOUT_SEC,
         ).strip()
     except Exception as exc:
@@ -189,6 +226,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
                         return True
                 except Exception:
                     pass
+        _maybe_restart_vmware_tools(vmx)
         diag = ""
         try:
             who = run_script_in_guest_capture(
@@ -211,6 +249,29 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
             diag,
         )
         return True
+    return False
+
+
+def has_active_rdp_connections_fast(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
+    try:
+        raw = run_vmrun(["-gu", GUEST_USER, "-gp", GUEST_PASS, "listProcessesInGuest", str(vmx)], timeout=5)
+        if raw and "rdpclip.exe" in raw.lower():
+            return True
+    except Exception as exc:
+        logger.debug("fast listProcessesInGuest failed: %s", exc)
+
+    try:
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=5)
+        ip = ip_raw.strip() if ip_raw else ""
+        if ip:
+            try:
+                with socket.create_connection((ip, rdp_port), timeout=min(0.5, TCP_PROBE_TIMEOUT_SEC)):
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return False
 
 

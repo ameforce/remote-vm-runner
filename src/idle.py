@@ -15,7 +15,7 @@ from .config import (
     RDP_PORT,
 )
 from .models import IdlePolicy, IdleState
-from .network import has_active_rdp_connections
+from .network import has_active_rdp_connections_fast as has_active_rdp_connections
 from .vmrun import run_vmrun
 
 
