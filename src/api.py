@@ -42,6 +42,7 @@ from .vmware import (
     is_vm_running,
     list_snapshots,
     start_vm_async,
+    wait_for_tools_ready,
     wait_for_vm_ready,
 )
 
@@ -70,6 +71,14 @@ def _revert_job(vm: str, snap: str, task_id: str) -> None:
         task.progress = "스냅샷 복구 중"
         vmx = vmx_from_name(vm)
         run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
+        if not is_vm_running(vmx):
+            task.progress = "전원 켜는 중"
+            start_vm_async(vmx)
+        try:
+            task.progress = "Tools 대기 중"
+            wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+        except Exception:
+            pass
         task.progress = "IP 획득 중"
         probe, tout = _calc_poll_params(vm, "revert")
         ip = fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
@@ -171,6 +180,12 @@ def create_app(config_module=None) -> FastAPI:
         if payload.snapshot not in snaps:
             raise HTTPException(404, f"Snapshot '{payload.snapshot}' not found.")
         run_vmrun(["revertToSnapshot", str(vmx), payload.snapshot], timeout=60)
+        if not is_vm_running(vmx):
+            start_vm_async(vmx)
+        try:
+            wait_for_tools_ready(vmx, timeout=60)
+        except Exception:
+            pass
         probe, tout = _calc_poll_params(payload.vm, "revert")
         fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe)
         renew_network(vmx)
@@ -186,6 +201,14 @@ def create_app(config_module=None) -> FastAPI:
             task.progress = "스냅샷 복구 중"
             vmx = _vmx_from_name_local(vm)
             run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
+            if not is_vm_running(vmx):
+                task.progress = "전원 켜는 중"
+                start_vm_async(vmx)
+            try:
+                task.progress = "Tools 대기 중"
+                wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+            except Exception:
+                pass
             task.progress = "IP 획득 중"
             probe, tout = _calc_poll_params(vm, "revert")
             ip = fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
