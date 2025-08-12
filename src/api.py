@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 import psutil
@@ -20,7 +21,7 @@ from .config import (
     VM_ROOT,
 )
 from .discovery import discover_vms, find_vmx_for_name
-from .idle import IDLE_DB, watchdog_tick
+from .idle import IDLE_DB, LAST_STATUS, watchdog_tick
 from .models import (
     IdlePolicy,
     ResourcePolicy,
@@ -123,12 +124,14 @@ def create_app(config_module=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        log = logging.getLogger("src.api")
         policy = IdlePolicy(
             enabled=True,
             idle_minutes=5,
             check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
             mode=IDLE_SHUTDOWN_MODE,
         )
+        log.info("starting watchdog thread: interval=%ss idle_minutes=%s mode=%s", policy.check_interval_sec, policy.idle_minutes, policy.mode)
         t = threading.Thread(target=_watchdog_loop, args=(policy,), daemon=True)
         t.start()
         yield
@@ -268,11 +271,24 @@ def create_app(config_module=None) -> FastAPI:
         return ResourcePolicy()
 
     def _watchdog_loop(policy: IdlePolicy) -> None:
+        log = logging.getLogger("src.watchdog")
         while policy.enabled:
             try:
                 watchdog_tick(policy)
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    LAST_STATUS["last_error"] = str(exc)
+                except Exception:
+                    pass
+                log.exception("watchdog tick failed: %s", exc)
             time.sleep(max(5, policy.check_interval_sec))
+
+    @app.get("/health")
+    def health():
+        status = {
+            "ok": True,
+            **{k: LAST_STATUS.get(k) for k in ("last_tick_at", "vm_count", "pressure", "available_mem_gb", "cpu_percent", "cpu_used_percent", "cpu_idle_percent", "stopped_count", "interval_sec", "last_error")},
+        }
+        return status
 
     return app

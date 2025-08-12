@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
+from typing import Any, Dict
 
 from . import metrics
 from .config import (
@@ -17,8 +19,23 @@ from .network import has_active_rdp_connections
 from .vmrun import run_vmrun
 
 
+logger = logging.getLogger(__name__)
+
+
 _CPU_OVER_LIMIT_COUNT = 0
 IDLE_DB: dict[str, IdleState] = {}
+
+LAST_STATUS: Dict[str, Any] = {
+    "last_tick_at": None,
+    "vm_count": 0,
+    "pressure": False,
+    "available_mem_gb": None,
+    "cpu_percent": None,
+    "cpu_used_percent": None,
+    "cpu_idle_percent": None,
+    "stopped_count": 0,
+    "last_error": None,
+}
 
 
 def _select_idle_vms_for_stop(candidates: list[Path]) -> list[Path]:
@@ -59,6 +76,9 @@ def _shutdown_vm(vmx: Path, mode: str = "soft") -> None:
 
 
 def watchdog_tick(policy: IdlePolicy) -> None:
+    LAST_STATUS["last_error"] = None
+    LAST_STATUS["stopped_count"] = 0
+    LAST_STATUS["last_tick_at"] = time.time()
     try:
         running_raw = run_vmrun(["list"], timeout=10)
         lines = [ln.strip() for ln in running_raw.splitlines() if ln.strip()]
@@ -67,13 +87,23 @@ def watchdog_tick(policy: IdlePolicy) -> None:
             p = Path(ln)
             if p.suffix.lower() == ".vmx" and p.exists():
                 vmx_list.append(p)
-    except Exception:
+    except Exception as exc:
+        LAST_STATUS["last_error"] = str(exc)
         vmx_list = []
+
+    LAST_STATUS["vm_count"] = len(vmx_list)
 
     now = time.time()
     threshold_seconds = max(0, int(policy.idle_minutes) * 60)
 
-    pressure, avail, cpu_pct = _is_pressure_high()
+    pressure, avail, cpu_pct_used = _is_pressure_high()
+    LAST_STATUS["pressure"] = pressure
+    LAST_STATUS["available_mem_gb"] = float(avail)
+    LAST_STATUS["cpu_used_percent"] = float(cpu_pct_used)
+    LAST_STATUS["cpu_percent"] = float(cpu_pct_used)
+    LAST_STATUS["cpu_idle_percent"] = max(0.0, 100.0 - float(cpu_pct_used))
+    LAST_STATUS["interval_sec"] = int(getattr(policy, "check_interval_sec", 0) or 0)
+
     for vmx in vmx_list:
         active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
         key = str(vmx)
@@ -81,6 +111,7 @@ def watchdog_tick(policy: IdlePolicy) -> None:
         if active:
             IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
 
+    victims_total = 0
     for vmx in vmx_list:
         name = vmx.parent.name
         active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
@@ -106,4 +137,17 @@ def watchdog_tick(policy: IdlePolicy) -> None:
                 s2 = IDLE_DB.get(key2) or IdleState(vm=victim.parent.name, vmx=str(victim), last_active_ts=now)
                 IDLE_DB[key2] = IdleState(vm=s2.vm, vmx=s2.vmx, last_active_ts=s2.last_active_ts, shutting_down=True)
                 _shutdown_vm(victim, mode=policy.mode)
+            victims_total += len(to_stop)
             break
+
+    LAST_STATUS["stopped_count"] = victims_total
+
+    msg = (
+        f"watchdog: vms={LAST_STATUS['vm_count']} mem_avail={LAST_STATUS['available_mem_gb']:.2f}GB "
+        f"cpu_avail={LAST_STATUS['cpu_idle_percent']:.1f}% pressure={LAST_STATUS['pressure']} "
+        f"stopped={LAST_STATUS['stopped_count']} mode={policy.mode} interval={LAST_STATUS['interval_sec']}s"
+    )
+    if victims_total > 0 or pressure:
+        logger.warning(msg)
+    else:
+        logger.info(msg)

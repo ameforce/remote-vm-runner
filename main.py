@@ -3,12 +3,53 @@ from src.api import create_app
 from src.cli import VMClient
 
 import argparse
+import logging
+from logging.config import dictConfig
 import uvicorn
+
+
+def _build_log_config() -> dict:
+    config = uvicorn.config.LOGGING_CONFIG.copy()
+    fmt = "[%(asctime)s] [%(name)s] [%(levelname)s]: %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    try:
+        config["formatters"]["default"]["fmt"] = fmt
+        config["formatters"]["default"]["datefmt"] = datefmt
+    except Exception:
+        pass
+    config = {
+        **config,
+        "loggers": {
+            **config.get("loggers", {}),
+            "": {  # root logger
+                "handlers": ["default"],
+                "level": "INFO",
+            },
+            "src": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "src.watchdog": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "src.idle": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
+        },
+    }
+    return config
 
 
 def run_server() -> int:
     app = create_app()
-    uvicorn.run(app, host="0.0.0.0", port=495, workers=1)
+    log_config = _build_log_config()
+    dictConfig(log_config)
+    uvicorn.run(app, host="0.0.0.0", port=495, log_config=log_config, log_level="info")
     return 0
 
 
