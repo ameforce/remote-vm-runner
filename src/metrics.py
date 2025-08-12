@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
-from config import CPU_SAMPLE_DURATION_SEC
+import re
+
+import psutil
+
+from .config import CPU_SAMPLE_DURATION_SEC
 
 
 def get_host_available_memory_gb() -> float:
     try:
         if os.name == "nt":
-            import ctypes
-
             class MEMORYSTATUSEX(ctypes.Structure):
                 _fields_ = [
                     ("dwLength", ctypes.c_ulong),
@@ -27,18 +30,13 @@ def get_host_available_memory_gb() -> float:
             stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
             ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
             return float(stat.ullAvailPhys) / (1024 ** 3)
-        try:
-            import psutil  # type: ignore
-            return float(psutil.virtual_memory().available) / (1024 ** 3)
-        except Exception:
-            return 9999.0
+        return float(psutil.virtual_memory().available) / (1024 ** 3)
     except Exception:
         return 9999.0
 
 
 def get_host_cpu_percent() -> float:
     try:
-        import psutil  # type: ignore
         pct = float(psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC))
         if pct >= 0.0:
             return pct
@@ -71,8 +69,7 @@ def get_host_cpu_percent() -> float:
                 lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
                 if len(lines) >= 3:
                     last = lines[-1]
-                    import re as _re
-                    m = _re.search(r"([0-9]+[\.,][0-9]+|[0-9]+)$", last)
+                    m = re.search(r"([0-9]+[\.,][0-9]+|[0-9]+)$", last)
                     if m:
                         val_str = m.group(1).replace(",", ".")
                         return float(val_str)
@@ -80,5 +77,3 @@ def get_host_cpu_percent() -> float:
             pass
 
     return 0.0
-
-

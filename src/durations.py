@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import os
+try:
+    import winreg  # type: ignore
+except Exception:  # ImportError on non-Windows
+    winreg = None  # type: ignore
 
-if os.name == "nt":
-    import winreg
 
+if winreg is not None:
     _REG_KEY = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\\QA_VM_API\\Durations")
 
     def _load_samples(name: str) -> list[float]:
@@ -33,5 +35,3 @@ else:
 
     def average_duration(name: str) -> float | None:  # type: ignore[no-redef]
         return None
-
-

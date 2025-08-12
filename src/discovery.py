@@ -39,5 +39,3 @@ def discover_vms(root: Path) -> Dict[str, Path]:
 def find_vmx_for_name(name: str, root: Path) -> Path | None:
     mapping = discover_vms(root)
     return mapping.get(name)
-
-

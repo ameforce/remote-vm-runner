@@ -1,13 +1,14 @@
 from pathlib import Path
-import sys
 from pathlib import Path as _Path
+
+import sys
+import src.discovery as mod
+
 
 ROOT = _Path(__file__).parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
-
-import src.discovery as mod
 
 
 def make_dir(tmp_path: Path, name: str) -> Path:
@@ -52,5 +53,3 @@ def test_find_vmx_for_name(tmp_path: Path):
     f = make_file(d / "VMXDir.vmx")
     out = mod.find_vmx_for_name("VMXDir", tmp_path)
     assert out == f
-
-

@@ -1,14 +1,14 @@
+import sys
+import src.cli as cli
 import builtins
 from unittest.mock import patch
-import sys
 from pathlib import Path as _Path
+
 
 ROOT = _Path(__file__).parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
-
-import src.cli as cli
 
 
 def test_choose_vm_happy_path(monkeypatch):
@@ -18,7 +18,7 @@ def test_choose_vm_happy_path(monkeypatch):
     inputs = iter([""])
     monkeypatch.setattr(builtins, "input", lambda _: next(inputs))
 
-    selected = cli.VMClient.choose(["A", "B"])  # choose uses input('') mock -> returns first
+    selected = cli.VMClient.choose(["A", "B"])
     assert selected == "A"
 
 
@@ -33,5 +33,3 @@ def test_get_vm_list_parses_response(monkeypatch):
     monkeypatch.setattr(cli.requests, "get", lambda url, timeout=10: Resp())
     names = cli.VMClient("http://x").get_vm_list()
     assert names == ["X", "Y"]
-
-

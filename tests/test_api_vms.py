@@ -1,16 +1,15 @@
 from pathlib import Path
 from fastapi.testclient import TestClient
 import sys
+import src.api as api
+import src.config as config
 from pathlib import Path as _Path
 
-# Ensure src path
+
 ROOT = _Path(__file__).parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
-
-import src.api as api
-import src.config as config
 
 
 def test_list_vms_endpoint(monkeypatch, tmp_path: Path):
@@ -21,7 +20,6 @@ def test_list_vms_endpoint(monkeypatch, tmp_path: Path):
     (root / "MyVM" / "nested").mkdir()
     (root / "MyVM" / "nested" / "Another.vmx").write_text(".")
 
-    # point to temp root
     monkeypatch.setattr(config, "VM_ROOT", root, raising=False)
     app = api.create_app(config_module=config)
     client = TestClient(app)
@@ -31,5 +29,3 @@ def test_list_vms_endpoint(monkeypatch, tmp_path: Path):
     names = {item["name"] for item in data["vms"]}
     assert names == {"Windows Server 2025", "MyVM"}
     assert data["root"] == str(root)
-
-

@@ -3,8 +3,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import metrics
-from config import (
+from . import metrics
+from .config import (
     CPU_CONSECUTIVE_TICKS,
     CPU_PRESSURE_THRESHOLD_PCT,
     IDLE_SHUTDOWN_MINUTES,
@@ -12,9 +12,9 @@ from config import (
     MIN_AVAILABLE_MEM_GB,
     RDP_PORT,
 )
-from models import IdlePolicy, IdleState
-from network import has_active_rdp_connections
-from vmware import run_vmrun
+from .models import IdlePolicy, IdleState
+from .network import has_active_rdp_connections
+from .vmrun import run_vmrun
 
 
 _CPU_OVER_LIMIT_COUNT = 0
@@ -74,7 +74,6 @@ def watchdog_tick(policy: IdlePolicy) -> None:
     threshold_seconds = max(0, int(policy.idle_minutes) * 60)
 
     pressure, avail, cpu_pct = _is_pressure_high()
-    # Always maintain last_active timestamps for active VMs
     for vmx in vmx_list:
         active = has_active_rdp_connections(vmx, rdp_port=RDP_PORT)
         key = str(vmx)
@@ -108,5 +107,3 @@ def watchdog_tick(policy: IdlePolicy) -> None:
                 IDLE_DB[key2] = IdleState(vm=s2.vm, vmx=s2.vmx, last_active_ts=s2.last_active_ts, shutting_down=True)
                 _shutdown_vm(victim, mode=policy.mode)
             break
-
-

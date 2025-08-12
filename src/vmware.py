@@ -3,33 +3,13 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
-from config import GUEST_PASS, GUEST_USER, IP_POLL_INTERVAL, IP_POLL_TIMEOUT, VMRUN
-
-
-def run_vmrun(args: Iterable[str], capture: bool = True, timeout: int = 120) -> str:
-    cmd = [str(VMRUN), "-T", "ws", *args]
-    try:
-        completed = subprocess.run(
-            cmd,
-            capture_output=capture,
-            text=True,
-            check=True,
-            encoding="utf-8",
-            timeout=timeout,
-        )
-        return completed.stdout.strip()
-    except subprocess.TimeoutExpired as exc:
-        try:
-            if exc.process:
-                exc.process.kill()
-        except Exception:
-            pass
-        return ""
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"vmrun failed: {exc.stderr.strip()}") from exc
+from .config import GUEST_PASS, GUEST_USER, IP_POLL_INTERVAL, IP_POLL_TIMEOUT, VMRUN
+from .network import renew_network
+from .vmrun import run_vmrun
 
 
 def run_in_guest(
@@ -113,9 +93,6 @@ def start_vm_async(vmx: Path) -> None:
             )
         except Exception:
             pass
-
-    import threading
-
     threading.Thread(target=run_start_command, daemon=True).start()
 
 
@@ -198,8 +175,6 @@ def wait_for_vm_ready(
                 if not _ping_ok(ip):
                     if on_progress:
                         on_progress("핑 응답 없음 – 네트워크 재협상")
-                    from .network import renew_network
-
                     renew_network(vmx, on_progress=on_progress)
                     continue
                 if on_progress:
@@ -208,5 +183,3 @@ def wait_for_vm_ready(
         except Exception:
             pass
         time.sleep(probe_interval)
-
-

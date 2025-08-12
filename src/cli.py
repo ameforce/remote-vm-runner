@@ -153,5 +153,3 @@ enablecredsspsupport:i:0
             print(f"   명령어: mstsc /v:{ip}")
             print("   계정: administrator")
             print("   비밀번호: epapyrus12#$")
-
-

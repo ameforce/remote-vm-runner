@@ -4,11 +4,14 @@ import socket
 import threading
 import time
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+import psutil
 
-import durations
-from config import (
+from . import durations
+from . import config as default_cfg
+from .config import (
     IDLE_CHECK_INTERVAL_SEC,
     IDLE_SHUTDOWN_MODE,
     IP_POLL_INTERVAL,
@@ -16,9 +19,9 @@ from config import (
     VM_MAP,
     VM_ROOT,
 )
-from discovery import discover_vms, find_vmx_for_name
-from idle import IDLE_DB, watchdog_tick
-from models import (
+from .discovery import discover_vms, find_vmx_for_name
+from .idle import IDLE_DB, watchdog_tick
+from .models import (
     IdlePolicy,
     ResourcePolicy,
     ConnectRequest,
@@ -30,8 +33,9 @@ from models import (
     VMListItem,
     VMListResponse,
 )
-from network import has_active_rdp_connections, is_preferred_ip, renew_network
-from vmware import (
+from .network import has_active_rdp_connections, is_preferred_ip, renew_network
+from .vmware import (
+    run_vmrun,
     fast_wait_for_ip,
     is_vm_running,
     list_snapshots,
@@ -63,8 +67,6 @@ def _revert_job(vm: str, snap: str, task_id: str) -> None:
         task.started = time.time()
         task.progress = "스냅샷 복구 중"
         vmx = vmx_from_name(vm)
-        from .vmware import run_vmrun
-
         run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
         task.progress = "IP 획득 중"
         probe, tout = _calc_poll_params(vm, "revert")
@@ -117,16 +119,10 @@ def _connect_job(vm: str, task_id: str) -> None:
 
 
 def create_app(config_module=None) -> FastAPI:
-    if config_module is not None:
-        cfg = config_module
-    else:
-        from . import config as cfg  # type: ignore
-    from contextlib import asynccontextmanager
+    cfg = config_module or default_cfg
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        import psutil  # noqa: F401
-
         policy = IdlePolicy(
             enabled=True,
             idle_minutes=5,
@@ -140,7 +136,7 @@ def create_app(config_module=None) -> FastAPI:
     app = FastAPI(title="QA VMware API", version="1.0.0", lifespan=lifespan)
 
     @app.get("/vms", response_model=VMListResponse)
-    def list_vms() -> VMListResponse:  # type: ignore[return-type]
+    def list_vms() -> VMListResponse:
         try:
             mapping = discover_vms(cfg.VM_ROOT)
         except Exception:
@@ -157,20 +153,18 @@ def create_app(config_module=None) -> FastAPI:
         raise HTTPException(404, detail=f"Unknown VM '{name}'")
 
     @app.get("/snapshots", response_model=SnapshotListResponse)
-    def snapshots(vm: str = "init") -> SnapshotListResponse:  # type: ignore[return-type]
+    def snapshots(vm: str = "init") -> SnapshotListResponse:
         vmx = _vmx_from_name_local(vm)
         snaps = list_snapshots(vmx)
         return SnapshotListResponse(vm=vm, snapshots=snaps)
 
     @app.post("/revert", response_model=RevertResponse)
-    def revert(payload: RevertRequest) -> RevertResponse:  # type: ignore[return-type]
+    def revert(payload: RevertRequest) -> RevertResponse:
         start_ts = time.perf_counter()
         vmx = _vmx_from_name_local(payload.vm)
         snaps = list_snapshots(vmx)
         if payload.snapshot not in snaps:
             raise HTTPException(404, f"Snapshot '{payload.snapshot}' not found.")
-        from .vmware import run_vmrun
-
         run_vmrun(["revertToSnapshot", str(vmx), payload.snapshot], timeout=60)
         probe, tout = _calc_poll_params(payload.vm, "revert")
         fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe)
@@ -185,8 +179,6 @@ def create_app(config_module=None) -> FastAPI:
             task.status = "running"
             task.started = time.time()
             task.progress = "스냅샷 복구 중"
-            from .vmware import run_vmrun
-
             vmx = _vmx_from_name_local(vm)
             run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
             task.progress = "IP 획득 중"
@@ -252,18 +244,18 @@ def create_app(config_module=None) -> FastAPI:
         return {"task_id": tid}
 
     @app.get("/expected_time", response_model=ExpectedTimeResponse)
-    def expected_time(vm: str = "init", op: str = "revert") -> ExpectedTimeResponse:  # type: ignore[return-type]
+    def expected_time(vm: str = "init", op: str = "revert") -> ExpectedTimeResponse:
         avg = durations.average_duration(f"{vm}_{op}")
         return ExpectedTimeResponse(vm=vm, op=op, avg_seconds=avg)
 
     @app.get("/task/{task_id}")
-    def task_status(task_id: str):  # type: ignore[return-type]
+    def task_status(task_id: str):
         if task_id not in TASKS:
             raise HTTPException(404, "task not found")
         return TASKS[task_id]
 
     @app.get("/idle_policy", response_model=IdlePolicy)
-    def get_idle_policy() -> IdlePolicy:  # type: ignore[return-type]
+    def get_idle_policy() -> IdlePolicy:
         return IdlePolicy(
             enabled=True,
             idle_minutes=5,
@@ -272,7 +264,7 @@ def create_app(config_module=None) -> FastAPI:
         )
 
     @app.get("/resource_policy", response_model=ResourcePolicy)
-    def get_resource_policy() -> ResourcePolicy:  # type: ignore[return-type]
+    def get_resource_policy() -> ResourcePolicy:
         return ResourcePolicy()
 
     def _watchdog_loop(policy: IdlePolicy) -> None:
@@ -284,5 +276,3 @@ def create_app(config_module=None) -> FastAPI:
             time.sleep(max(5, policy.check_interval_sec))
 
     return app
-
-

@@ -1,25 +1,23 @@
 from pathlib import Path
 import sys
+import src.api as api
+import src.idle as idle
+import src.models as models
+
 
 ROOT = Path(__file__).parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
 
-import src.api as api
-import src.idle as idle
-
 
 def test_pressure_reclaims_idle(monkeypatch, tmp_path: Path):
-    # Force pressure high (memory or CPU)
-    # Force pressure high (memory or CPU)
     monkeypatch.setattr(idle, "MIN_AVAILABLE_MEM_GB", 8.0, raising=False)
     monkeypatch.setattr(idle.metrics, "get_host_available_memory_gb", lambda: 1.0)
     monkeypatch.setattr(idle, "CPU_PRESSURE_THRESHOLD_PCT", 90, raising=False)
     monkeypatch.setattr(idle.metrics, "get_host_cpu_percent", lambda: 99.0)
     monkeypatch.setattr(idle, "MAX_SHUTDOWNS_PER_TICK", 2, raising=False)
 
-    # Prepare two running idle VMs and one active
     vmx_idle1 = tmp_path / "idle1.vmx"; vmx_idle1.write_text(".")
     vmx_idle2 = tmp_path / "idle2.vmx"; vmx_idle2.write_text(".")
     vmx_active = tmp_path / "active.vmx"; vmx_active.write_text(".")
@@ -33,7 +31,6 @@ def test_pressure_reclaims_idle(monkeypatch, tmp_path: Path):
     def fake_shutdown(vmx, mode="soft"):
         calls.append(str(vmx))
 
-    # active detection: last one is active
     def fake_has_active(vmx, rdp_port=3389):
         return str(vmx) == str(vmx_active)
 
@@ -42,18 +39,13 @@ def test_pressure_reclaims_idle(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(idle, "has_active_rdp_connections", fake_has_active)
     idle.IDLE_DB.clear()
 
-    # Simulate last_active_ts older than threshold for idles
     now = idle.time.time()
-    idle.IDLE_DB[str(vmx_idle1)] = api.IdleState(vm="idle1", vmx=str(vmx_idle1), last_active_ts=now - 600)
-    idle.IDLE_DB[str(vmx_idle2)] = api.IdleState(vm="idle2", vmx=str(vmx_idle2), last_active_ts=now - 601)
-    idle.IDLE_DB[str(vmx_active)] = api.IdleState(vm="active", vmx=str(vmx_active), last_active_ts=now)
+    idle.IDLE_DB[str(vmx_idle1)] = models.IdleState(vm="idle1", vmx=str(vmx_idle1), last_active_ts=now - 600)
+    idle.IDLE_DB[str(vmx_idle2)] = models.IdleState(vm="idle2", vmx=str(vmx_idle2), last_active_ts=now - 601)
+    idle.IDLE_DB[str(vmx_active)] = models.IdleState(vm="active", vmx=str(vmx_active), last_active_ts=now)
 
-    # Tick with 5-minute idle policy
     idle.watchdog_tick(api.IdlePolicy(enabled=True, idle_minutes=5, check_interval_sec=1, mode="soft"))
 
-    # Should stop up to MAX_SHUTDOWNS_PER_TICK idle VMs, not the active one
     assert calls
     assert str(vmx_active) not in calls
     assert set(calls).issubset({str(vmx_idle1), str(vmx_idle2)})
-
-

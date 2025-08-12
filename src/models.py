@@ -73,5 +73,3 @@ class IdleState(BaseModel):
     vmx: str
     last_active_ts: float | None = None
     shutting_down: bool = False
-
-

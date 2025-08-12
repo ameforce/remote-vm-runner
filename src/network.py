@@ -4,8 +4,8 @@ import ipaddress
 from pathlib import Path
 from typing import Callable
 
-from config import EXCLUDE_SUBNETS, PREFERRED_SUBNETS, RDP_PORT
-from vmware import run_in_guest, run_in_guest_capture
+from .config import EXCLUDE_SUBNETS, PREFERRED_SUBNETS, RDP_PORT
+from .guest import run_in_guest, run_in_guest_capture
 
 
 def is_preferred_ip(ip_str: str) -> bool:
@@ -67,5 +67,3 @@ def renew_network(vmx: Path, on_progress: Callable[[str], None] | None = None) -
         except Exception as exc:
             log(f"{title} 실패: {exc}")
     log("네트워크 재협상 종료")
-
-
