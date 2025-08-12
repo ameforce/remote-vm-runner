@@ -14,6 +14,7 @@ from .config import (
     RDP_QUSER_TIMEOUT_SEC,
 )
 from .guest import run_in_guest, run_in_guest_capture
+from .vmrun import run_vmrun
 
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,23 @@ def is_preferred_ip(ip_str: str) -> bool:
 
 
 def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
+    try:
+        st = run_vmrun(["checkToolsState", str(vmx)], timeout=8)
+        if "running" not in st.lower():
+            if ASSUME_ACTIVE_ON_FAILURE:
+                logger.warning("RDP check skipped – VMware Tools not running; assuming ACTIVE: vmx=%s", vmx)
+                return True
+            logger.warning("RDP check skipped – VMware Tools not running; assuming INACTIVE: vmx=%s", vmx)
+            return False
+    except Exception as exc:
+        logger.debug("checkToolsState failed: %s", exc)
+
     ps_cmd = (
         f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue);"
         " if($c){'YES'} else {'NO'}"
     )
     out = None
+    ps_err: str | None = None
     try:
         out = run_in_guest_capture(
             vmx,
@@ -44,6 +57,7 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
             timeout=RDP_PS_TIMEOUT_SEC,
         )
     except Exception as exc:
+        ps_err = str(exc)
         logger.debug("RDP PS probe failed: %s", exc)
     if out:
         if "YES" in out:
@@ -52,9 +66,11 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
             return False
 
     q_out = None
+    quser_err: str | None = None
     try:
         q_out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\quser.exe", timeout=RDP_QUSER_TIMEOUT_SEC)
     except Exception as exc:
+        quser_err = str(exc)
         logger.debug("RDP quser probe failed: %s", exc)
     if q_out:
         keywords = {" active ", "활성", "activo", "attivo", "aktív", "aktief"}
@@ -66,7 +82,22 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
                 return True
 
     if ASSUME_ACTIVE_ON_FAILURE:
-        logger.warning("RDP status inconclusive – assuming ACTIVE for safety: vmx=%s port=%s", vmx, rdp_port)
+        diag = ""
+        try:
+            who = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\whoami.exe", timeout=8)
+            diag = f"whoami={'none' if not who else who.strip()}"
+        except Exception as exc:
+            diag = f"whoami_error={exc}"
+        logger.warning(
+            "RDP status inconclusive – assuming ACTIVE for safety: vmx=%s port=%s ps_out=%s quser_out=%s ps_err=%s quser_err=%s %s",
+            vmx,
+            rdp_port,
+            'none' if not out else 'len>0',
+            'none' if not q_out else 'len>0',
+            ps_err or 'none',
+            quser_err or 'none',
+            diag,
+        )
         return True
     return False
 

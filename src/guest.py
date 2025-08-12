@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+import logging
 from typing import Iterable
 
 from .config import GUEST_PASS, GUEST_USER
 from .vmrun import run_vmrun
+
+
+logger = logging.getLogger(__name__)
 
 
 def run_in_guest(
@@ -38,6 +42,13 @@ def run_in_guest(
             if m and int(m.group(1)) in success_codes:
                 return
             if attempt == retries:
+                logger.debug(
+                    "run_in_guest failed after %s attempts: program=%s vmx=%s error=%s",
+                    attempt,
+                    program,
+                    vmx,
+                    msg,
+                )
                 return
 
 
@@ -59,5 +70,11 @@ def run_in_guest_capture(
     ]
     try:
         return run_vmrun(cmd_base, capture=True, timeout=timeout)
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "run_in_guest_capture failed: program=%s vmx=%s error=%s",
+            program,
+            vmx,
+            exc,
+        )
         return ""
