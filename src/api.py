@@ -1,35 +1,37 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+import logging
+import os
 import socket
 import threading
 import time
 from pathlib import Path
-from contextlib import asynccontextmanager
-import logging
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
 import psutil
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 
-from . import durations
 from . import config as default_cfg
+from . import durations
 from .config import (
     IDLE_CHECK_INTERVAL_SEC,
-    IDLE_SHUTDOWN_MODE,
     IDLE_ONLY_ON_PRESSURE,
+    IDLE_SHUTDOWN_MODE,
     IP_POLL_INTERVAL,
     IP_POLL_TIMEOUT,
+    REQUIRE_GUEST_CREDENTIALS,
     VM_MAP,
     VM_ROOT,
 )
 from .discovery import discover_vms, find_vmx_for_name
 from .idle import IDLE_DB, LAST_STATUS, watchdog_tick
 from .models import (
-    IdlePolicy,
-    ResourcePolicy,
     ConnectRequest,
     ExpectedTimeResponse,
+    IdlePolicy,
     RevertRequest,
     RevertResponse,
+    ResourcePolicy,
     SnapshotListResponse,
     TaskInfo,
     VMListItem,
@@ -37,10 +39,10 @@ from .models import (
 )
 from .network import has_active_rdp_connections, is_preferred_ip, renew_network
 from .vmware import (
-    run_vmrun,
     fast_wait_for_ip,
     is_vm_running,
     list_snapshots,
+    run_vmrun,
     start_vm_async,
     wait_for_tools_ready,
     wait_for_vm_ready,
@@ -110,7 +112,8 @@ def _connect_job(vm: str, task_id: str) -> None:
         task.started = time.time()
         task.progress = "IP 획득 중"
         vmx = vmx_from_name(vm)
-        if not is_vm_running(vmx):
+        was_running = is_vm_running(vmx)
+        if not was_running:
             start_vm_async(vmx)
         probe, tout = _calc_poll_params(vm, "connect")
         ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
@@ -122,7 +125,8 @@ def _connect_job(vm: str, task_id: str) -> None:
         task.status = "done"
         task.progress = "완료"
         task.finished = time.time()
-        durations.record_duration(f"{vm}_connect", task.finished - task.started)
+        key = f"{vm}_connect_warm" if was_running else f"{vm}_connect_cold"
+        durations.record_duration(key, task.finished - task.started)
     except Exception as exc:
         task.status = "failed"
         task.error = str(exc)
@@ -149,6 +153,15 @@ def create_app(config_module=None) -> FastAPI:
 
     app = FastAPI(title="QA VMware API", version="1.0.0", lifespan=lifespan)
 
+    _log = logging.getLogger("src.api")
+    _u = (os.getenv("GUEST_USER") or "").strip()
+    _p = (os.getenv("GUEST_PASS") or "").strip()
+    if not _u or not _p:
+        _log.warning("Guest credentials are not fully set in environment: GUEST_USER=%s, GUEST_PASS=%s", bool(_u), bool(_p))
+        if REQUIRE_GUEST_CREDENTIALS:
+            _log.error("REQUIRE_GUEST_CREDENTIALS=true and required env vars are missing; refusing to start.")
+            raise RuntimeError("Missing required environment variables: GUEST_USER/GUEST_PASS")
+
     @app.get("/vms", response_model=VMListResponse)
     def list_vms() -> VMListResponse:
         try:
@@ -171,6 +184,12 @@ def create_app(config_module=None) -> FastAPI:
         vmx = _vmx_from_name_local(vm)
         snaps = list_snapshots(vmx)
         return SnapshotListResponse(vm=vm, snapshots=snaps)
+
+    @app.get("/vm_state")
+    def vm_state(vm: str = "init"):
+        vmx = _vmx_from_name_local(vm)
+        running = is_vm_running(vmx)
+        return {"vm": vm, "running": bool(running)}
 
     @app.post("/revert", response_model=RevertResponse)
     def revert(payload: RevertRequest) -> RevertResponse:
@@ -246,7 +265,8 @@ def create_app(config_module=None) -> FastAPI:
             task.started = time.time()
             task.progress = "IP 획득 중"
             vmx = _vmx_from_name_local(vm)
-            if not is_vm_running(vmx):
+            was_running = is_vm_running(vmx)
+            if not was_running:
                 start_vm_async(vmx)
             probe, tout = _calc_poll_params(vm, "connect")
             ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
@@ -258,7 +278,8 @@ def create_app(config_module=None) -> FastAPI:
             task.status = "done"
             task.progress = "완료"
             task.finished = time.time()
-            durations.record_duration(f"{vm}_connect", task.finished - task.started)
+            key = f"{vm}_connect_warm" if was_running else f"{vm}_connect_cold"
+            durations.record_duration(key, task.finished - task.started)
         except Exception as exc:
             task.status = "failed"
             task.error = str(exc)
@@ -295,6 +316,17 @@ def create_app(config_module=None) -> FastAPI:
     @app.get("/resource_policy", response_model=ResourcePolicy)
     def get_resource_policy() -> ResourcePolicy:
         return ResourcePolicy()
+
+    @app.get("/guest_credentials")
+    def get_guest_credentials():
+        log = logging.getLogger("src.api")
+        user = (os.getenv("GUEST_USER") or "").strip()
+        pw = (os.getenv("GUEST_PASS") or "").strip()
+        if not user:
+            log.warning("GUEST_USER is not set; clients cannot auto login.")
+        if not pw:
+            log.warning("GUEST_PASS is not set; clients cannot auto login.")
+        return {"guest_user": user, "guest_pass": pw}
 
     def _watchdog_loop(policy: IdlePolicy) -> None:
         log = logging.getLogger("src.watchdog")

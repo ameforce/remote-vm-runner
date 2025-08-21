@@ -7,6 +7,11 @@ from pathlib import Path
 
 VMRUN: Path = Path(os.getenv("VMRUN_PATH", r"C:\\Program Files (x86)\\VMware\\VMware Workstation\\vmrun.exe"))
 VM_ROOT: Path = Path(os.getenv("VM_ROOT", r"C:\\VMware"))
+RDP_TEMPLATE_PATH: Path = Path(
+    os.getenv("RDP_TEMPLATE_PATH", "") or (Path(__file__).parents[1] / "templates" / "rdp_template.rdp")
+)
+RDP_CMD: str = os.getenv("RDP_CMD", "mstsc")
+ENABLE_CMDKEY_PRELOAD: bool = os.getenv("ENABLE_CMDKEY_PRELOAD", "true").strip().lower() in {"1", "true", "yes"}
 
 def _load_alias_map_from_env() -> dict[str, Path]:
     raw = os.getenv("VM_ALIASES", "").strip()
@@ -27,8 +32,14 @@ def _load_alias_map_from_env() -> dict[str, Path]:
 
 VM_MAP: dict[str, Path] = _load_alias_map_from_env()
 
-GUEST_USER: str = os.getenv("GUEST_USER", "administrator")
-GUEST_PASS: str = os.getenv("GUEST_PASS", "epapyrus12#$")
+def _get_env_with_flag(name: str, default: str = "") -> tuple[str, bool]:
+    val = os.getenv(name)
+    if val is None:
+        return default, False
+    return val, True
+
+GUEST_USER, GUEST_USER_FROM_ENV = _get_env_with_flag("GUEST_USER", "")
+GUEST_PASS, GUEST_PASS_FROM_ENV = _get_env_with_flag("GUEST_PASS", "")
 
 IP_POLL_INTERVAL: float = float(os.getenv("IP_POLL_INTERVAL", "0.2"))
 IP_POLL_TIMEOUT: int = int(os.getenv("IP_POLL_TIMEOUT", "120"))
@@ -61,9 +72,11 @@ TOOLS_RESTART_COOLDOWN_SEC: int = int(os.getenv("TOOLS_RESTART_COOLDOWN_SEC", "6
 
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
 MAX_SHUTDOWNS_PER_TICK: int = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
-CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "95"))
+CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "85"))
 CPU_SAMPLE_DURATION_SEC: float = float(os.getenv("CPU_SAMPLE_DURATION_SEC", "0.2"))
 CPU_CONSECUTIVE_TICKS: int = int(os.getenv("CPU_CONSECUTIVE_TICKS", "3"))
 
 _RDP_DETECTION_MODE_RAW = os.getenv("RDP_DETECTION_MODE", "hybrid").strip().lower()
 RDP_DETECTION_MODE: str = _RDP_DETECTION_MODE_RAW if _RDP_DETECTION_MODE_RAW in {"fast", "hybrid", "thorough"} else "hybrid"
+
+REQUIRE_GUEST_CREDENTIALS: bool = os.getenv("REQUIRE_GUEST_CREDENTIALS", "false").strip().lower() in {"1", "true", "yes"}
