@@ -36,35 +36,10 @@ def get_host_available_memory_gb() -> float:
 
 
 def get_host_cpu_percent() -> float:
-    try:
-        pct = float(psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC))
-        if pct >= 0.0:
-            return pct
-    except Exception:
-        pass
-
     if os.name == "nt":
         try:
-            ps_cmd = (
-                "($s=(Get-Counter '" + r"\Processor(_Total)\% Processor Time" + "' -SampleInterval 1 -MaxSamples 1).CounterSamples.CookedValue) | "
-                "Measure-Object -Average | ForEach-Object { [int][math]::Round($_.Average) }"
-            )
-            proc = subprocess.run([
-                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-                "-NoProfile",
-                "-Command",
-                ps_cmd,
-            ], capture_output=True, text=True, timeout=3)
-            if proc.returncode == 0:
-                out = proc.stdout.strip()
-                if out.isdigit():
-                    return float(int(out))
-        except Exception:
-            pass
-
-        try:
             cmd = ["typeperf", "-sc", "1", r"\Processor(_Total)\% Processor Time"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if proc.returncode == 0:
                 lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
                 if len(lines) >= 3:
@@ -75,5 +50,30 @@ def get_host_cpu_percent() -> float:
                         return float(val_str)
         except Exception:
             pass
+
+        try:
+            ps_cmd = (
+                "($s=(Get-Counter '" + r"\Processor(_Total)\% Processor Time" + "' -SampleInterval 1 -MaxSamples 1).CounterSamples.CookedValue) | "
+                "Measure-Object -Average | ForEach-Object { [int][math]::Round($_.Average) }"
+            )
+            proc = subprocess.run([
+                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-NoProfile",
+                "-Command",
+                ps_cmd,
+            ], capture_output=True, text=True, timeout=5)
+            if proc.returncode == 0:
+                out = proc.stdout.strip()
+                if out.isdigit():
+                    return float(int(out))
+        except Exception:
+            pass
+
+    try:
+        pct = float(psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC))
+        if pct >= 0.0:
+            return pct
+    except Exception:
+        pass
 
     return 0.0

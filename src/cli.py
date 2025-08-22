@@ -68,7 +68,7 @@ class VMClient:
                     leave=False,
                     ascii=False,
                 )
-                pbar.set_description_str(f"0/{total_secs}s | 남은 {total_secs}s | 대기 중")
+                pbar.set_description_str(f"0/{total_secs}s | {total_secs}s 남음 | 대기 중")
 
             while True:
                 r = requests.get(f"{self.api_base}/task/{task_id}", timeout=5).json()
@@ -83,7 +83,7 @@ class VMClient:
                         global_elapsed = int(time.perf_counter() - float(gp["start"]))
                         display_total = int(round(float(gp["expected"])))
                         remaining = max(display_total - global_elapsed, 0)
-                        pbar.set_description_str(f"{global_elapsed}/{display_total}s | 남은 {remaining}s | {status_msg}")
+                        pbar.set_description_str(f"{global_elapsed}/{display_total}s | {remaining}s 남음 | {status_msg}")
                         target_n = min(global_elapsed, int(pbar.total or global_elapsed))
                         delta = target_n - int(pbar.n)
                         if delta > 0:
@@ -92,7 +92,7 @@ class VMClient:
                         local_elapsed = int(elapsed)
                         display_total = int(pbar.total or 0)
                         remaining = max(display_total - local_elapsed, 0)
-                        pbar.set_description_str(f"{local_elapsed}/{display_total}s | 남은 {remaining}s | {status_msg}")
+                        pbar.set_description_str(f"{local_elapsed}/{display_total}s | {remaining}s 남음 | {status_msg}")
                         inc = int(elapsed) - int(last_shown)
                         if inc > 0:
                             remaining_allowed = max((pbar.total or 0) - int(pbar.n), 0)
@@ -143,7 +143,7 @@ class VMClient:
         msg = VMClient._build_status_message(status, progress_msg)
         if total_eta is not None:
             return f"[{bar}] {int(ratio*100):3d}% | elapsed {int(elapsed)}s | 총 남은 시간 {total_eta}s | {msg}"
-        return f"[{bar}] {int(ratio*100):3d}% | {int(elapsed)}/{int(expected)}s | 남은 {remaining}s | {msg}"
+        return f"[{bar}] {int(ratio*100):3d}% | {int(elapsed)}/{int(expected)}s | {remaining}s 남음 | {msg}"
 
     @staticmethod
     def _build_status_message(status: str, progress_msg: str, max_len: int = 50) -> str:
