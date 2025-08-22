@@ -288,12 +288,39 @@ def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
 
 def has_active_rdp_connections_fast(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
     try:
+        out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\query.exe", "user", timeout=RDP_QUSER_TIMEOUT_SEC)
+        if out and (" active " in out.lower() or "활성" in out.lower()):
+            return True
+    except Exception:
+        pass
+    try:
+        out2 = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\qwinsta.exe", timeout=RDP_QUSER_TIMEOUT_SEC)
+        if out2 and ("active" in out2.lower() or "활성" in out2.lower()):
+            return True
+    except Exception:
+        pass
+    try:
         raw = run_vmrun(["-gu", GUEST_USER, "-gp", GUEST_PASS, "listProcessesInGuest", str(vmx)], timeout=5)
         if raw and "rdpclip.exe" in raw.lower():
             return True
     except Exception as exc:
         logger.debug("fast listProcessesInGuest failed: %s", exc)
     return False
+
+
+def has_active_rdp_connections_tcp(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
+    try:
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=6)
+        ip = ip_raw.strip()
+        if not ip:
+            return False
+    except Exception:
+        return False
+    try:
+        with socket.create_connection((ip, rdp_port), timeout=TCP_PROBE_TIMEOUT_SEC):
+            return True
+    except Exception:
+        return False
 
 
 def renew_network(vmx: Path, on_progress: Callable[[str], None] | None = None) -> None:

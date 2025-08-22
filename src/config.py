@@ -73,10 +73,14 @@ TOOLS_RESTART_COOLDOWN_SEC: int = int(os.getenv("TOOLS_RESTART_COOLDOWN_SEC", "6
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
 MAX_SHUTDOWNS_PER_TICK: int = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
 CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "85"))
-CPU_SAMPLE_DURATION_SEC: float = float(os.getenv("CPU_SAMPLE_DURATION_SEC", "0.2"))
+CPU_SAMPLE_DURATION_SEC: float = float(os.getenv("CPU_SAMPLE_DURATION_SEC", "1.0"))
 CPU_CONSECUTIVE_TICKS: int = int(os.getenv("CPU_CONSECUTIVE_TICKS", "3"))
 
-_RDP_DETECTION_MODE_RAW = os.getenv("RDP_DETECTION_MODE", "hybrid").strip().lower()
-RDP_DETECTION_MODE: str = _RDP_DETECTION_MODE_RAW if _RDP_DETECTION_MODE_RAW in {"fast", "hybrid", "thorough"} else "hybrid"
+_RDP_DETECTION_MODE_RAW = os.getenv("RDP_DETECTION_MODE", "tcp").strip().lower()
+_ALLOWED_RDP_MODES = {"fast", "hybrid", "thorough", "tcp", "off"}
+RDP_DETECTION_MODE: str = _RDP_DETECTION_MODE_RAW if _RDP_DETECTION_MODE_RAW in _ALLOWED_RDP_MODES else "hybrid"
+
+RDP_CHECK_CONCURRENCY: int = max(1, int(os.getenv("RDP_CHECK_CONCURRENCY", "2")))
+RDP_CHECK_BATCH_SIZE: int = max(0, int(os.getenv("RDP_CHECK_BATCH_SIZE", "0")))
 
 REQUIRE_GUEST_CREDENTIALS: bool = os.getenv("REQUIRE_GUEST_CREDENTIALS", "false").strip().lower() in {"1", "true", "yes"}

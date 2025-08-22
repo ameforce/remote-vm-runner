@@ -123,13 +123,8 @@ ping %REMOTE_VM_API_HOST%
 telnet %REMOTE_VM_API_HOST% %REMOTE_VM_API_PORT%
 ```
 
-### VM 메시지박스 문제
-- VMX 파일에서 CD-ROM 자동감지 비활성화 완료
-- 더 이상 "Cannot connect virtual device" 메시지 없음
-
 ### 로그 확인
 - API 서버: 콘솔 출력으로 실시간 확인
-- 상세한 진행 상황 로그 포함
 
 ## 파일 구조
 
@@ -139,8 +134,7 @@ remote-vm-runner/
 ├── src/                  # 모듈
 ├── tests/                # 테스트
 ├── templates/            # 템플릿(.rdp 템플릿 등)
-├── requirements.txt      # 패키지 목록
-└── README.md             # 이 파일
+└── requirements.txt      # 패키지 목록
 ```
 
 ## 주요 기능
@@ -158,6 +152,29 @@ remote-vm-runner/
   - `GUEST_USER` / `GUEST_PASS`: 게스트 OS 로그인 자격 증명
   - `RDP_TEMPLATE_PATH`: `.rdp` 생성 시 사용할 템플릿 경로(기본: `templates/rdp_template.rdp`)
   - `REQUIRE_GUEST_CREDENTIALS`: true로 설정하면 서버 시작 시 `GUEST_USER`/`GUEST_PASS` 미설정일 경우 시작을 거부하고 에러 로그를 남깁니다. 기본값 false.
+  - `RDP_DETECTION_MODE`: `thorough|hybrid|fast|tcp|off` (기본: `hybrid`)
+    - thorough: 게스트 내 PowerShell/쿼리 기반, 정확도 높음(부하 큼)
+    - hybrid: fast 1차 + 불확실 시 thorough 재검증(기본)
+    - fast: `query.exe`/`qwinsta` 우선, 실패 시 `listProcessesInGuest`(경량)
+    - tcp: 게스트 명령 미실행, 호스트에서 TCP로 RDP 포트 확인(최소 부하)
+    - off: RDP 활동 감지 비활성화
+  - `RDP_CHECK_CONCURRENCY`: 한 tick당 병렬 감지 수(기본: 2)
+  - `RDP_CHECK_BATCH_SIZE`: 한 tick당 감지할 VM 수 제한(0=무제한)
+  - `CPU_SAMPLE_DURATION_SEC`: psutil CPU 샘플링 윈도우(기본: 1.0초). Windows에서는 우선적으로 `typeperf`/`Get-Counter` 기반 1초 샘플을 사용하여 작업관리자와 일치하도록 측정합니다.
+
+운영 팁:
+- CPU 스파이크가 보이면 `RDP_DETECTION_MODE=tcp`, `RDP_CHECK_CONCURRENCY=1`로 시작해 부하를 확인하세요.
+- 정확도가 더 필요하면 `fast` 또는 `hybrid`로 올리되 동시성은 낮게 유지하세요.
+
+### 리소스 압력 및 CPU 샘플링
+
+Windows 호스트에서 CPU 사용률은 작업관리자와의 일치도를 높이기 위해 다음 순서로 측정됩니다:
+
+- 우선: `typeperf "\\Processor(_Total)\\% Processor Time" -sc 1` (약 1초 샘플)
+- 폴백: PowerShell `Get-Counter '\\Processor(_Total)\\% Processor Time' -SampleInterval 1 -MaxSamples 1`
+- 최종 폴백: `psutil.cpu_percent(interval=CPU_SAMPLE_DURATION_SEC)`
+
+기본 `CPU_SAMPLE_DURATION_SEC`는 1.0초로 상향되어 순간적인 지터를 줄이고 작업관리자 그래프와 더 유사한 값을 제공합니다. 로그의 `cpu_avail`은 `100 - cpu_used_percent`로 표시됩니다.
 
 ### RDP 템플릿 사용법
 
