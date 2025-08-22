@@ -1,6 +1,7 @@
 from __future__ import annotations
 from src.cli import VMClient
 from src.errors import ExitCode, map_requests_error
+from src.envutils import ensure_guest_credentials_interactive, ensure_remote_api_env_interactive
 
 from logging.config import dictConfig
 import argparse
@@ -10,8 +11,6 @@ import sys
 
 import requests
 import uvicorn
-import getpass
-import subprocess
 
 
 def _build_log_config() -> dict:
@@ -51,60 +50,10 @@ def _build_log_config() -> dict:
     return config
 
 
-def _persist_env_vars(vars_to_set: dict[str, str]) -> str:
-    """
-    Persist variables to Windows environment.
-    Tries system-level first (/M), falls back to user-level on failure.
-    Returns scope: "machine" or "user".
-    """
-    if os.name != "nt":
-        for k, v in vars_to_set.items():
-            os.environ[k] = v
-        return "process"
-    scope = "machine"
-    try:
-        for k, v in vars_to_set.items():
-            subprocess.run(["setx", "/M", k, v], check=True, shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        scope = "user"
-        for k, v in vars_to_set.items():
-            try:
-                subprocess.run(["setx", k, v], check=True, shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-    for k, v in vars_to_set.items():
-        os.environ[k] = v
-    return scope
-
-
-def _ensure_guest_credentials_interactive() -> None:
-    user = (os.getenv("GUEST_USER") or "").strip()
-    pw = (os.getenv("GUEST_PASS") or "").strip()
-    if user and pw:
-        logging.getLogger("main").info("Guest credentials loaded from environment (GUEST_USER=%s).", user)
-        return
-    if sys.stdin and sys.stdin.isatty():
-        print("서버 시작에 필요한 게스트 계정 정보를 설정합니다. (값은 시스템 환경변수에 저장됩니다)")
-        while True:
-            entered_user = input("게스트 사용자명 (예: administrator): ").strip()
-            if entered_user:
-                break
-            print("사용자명을 입력해주세요.")
-        while True:
-            entered_pass = getpass.getpass("게스트 비밀번호: ").strip()
-            if entered_pass:
-                break
-            print("비밀번호를 입력해주세요.")
-        scope = _persist_env_vars({"GUEST_USER": entered_user, "GUEST_PASS": entered_pass})
-        logging.getLogger("main").info("게스트 자격 증명을 %s 환경변수에 저장했습니다. (GUEST_USER=%s)", scope, entered_user)
-        return
-    logging.getLogger("main").warning("GUEST_USER/GUEST_PASS 미설정이며, TTY가 없어 인터랙티브 입력이 불가합니다.")
-
-
 def run_server() -> int:
     log_config = _build_log_config()
     dictConfig(log_config)
-    _ensure_guest_credentials_interactive()
+    ensure_guest_credentials_interactive()
     from src.api import create_app
     app = create_app()
     listen_host = os.getenv("REMOTE_VM_API_LISTEN_HOST", "0.0.0.0")
@@ -114,6 +63,7 @@ def run_server() -> int:
 
 
 def run_client() -> int:
+    ensure_remote_api_env_interactive()
     api_host = os.getenv("REMOTE_VM_API_HOST", "127.0.0.1")
     api_port = os.getenv("REMOTE_VM_API_PORT", "495")
     base_url = f"http://{api_host}:{api_port}"
