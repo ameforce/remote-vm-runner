@@ -87,11 +87,6 @@ def run_script_in_guest_capture(
     *,
     timeout: int = 30,
 ) -> str:
-    """Run a script inside guest and capture its stdout via vmrun runScriptInGuest.
-
-    This is more reliable for capturing output than runProgramInGuest, which often
-    does not propagate the child process' stdout back to the host.
-    """
     cmd_base: list[str] = [
         "-gu",
         GUEST_USER,

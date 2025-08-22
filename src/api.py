@@ -10,6 +10,8 @@ from pathlib import Path
 
 import psutil
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import time as _time
 
 from . import config as default_cfg
 from . import durations
@@ -38,7 +40,16 @@ from .models import (
     VMListItem,
     VMListResponse,
 )
-from .network import has_active_rdp_connections, is_preferred_ip, renew_network
+from .network import (
+    has_active_rdp_connections,
+    has_active_rdp_connections_fast,
+    has_active_rdp_connections_tcp,
+    is_preferred_ip,
+    renew_network,
+    get_active_rdp_remote_ips,
+    get_active_rdp_usernames,
+    get_active_rdp_usernames_best,
+)
 from .vmware import (
     fast_wait_for_ip,
     is_vm_running,
@@ -74,6 +85,15 @@ def _revert_job(vm: str, snap: str, task_id: str) -> None:
         task.started = time.time()
         task.progress = "스냅샷 복구 중"
         vmx = vmx_from_name(vm)
+        try:
+            active_clients = get_active_rdp_remote_ips(vmx)
+        except Exception:
+            active_clients = []
+        if active_clients:
+            task.status = "failed"
+            task.error = f"Active RDP clients detected ({', '.join(active_clients)}); revert is blocked."
+            task.finished = time.time()
+            return
         run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
         if not is_vm_running(vmx):
             task.progress = "전원 켜는 중"
@@ -169,6 +189,14 @@ def create_app(config_module=None) -> FastAPI:
     app = FastAPI(title="QA VMware API", version="1.0.0", lifespan=lifespan)
 
     _log = logging.getLogger("src.api")
+    try:
+        logging.getLogger().setLevel(logging.DEBUG)
+        _log.setLevel(logging.DEBUG)
+        logging.getLogger("src").setLevel(logging.DEBUG)
+        logging.getLogger("src.rdpmon").setLevel(logging.DEBUG)
+        logging.getLogger("src.watchdog").setLevel(logging.DEBUG)
+    except Exception:
+        pass
     _u = (os.getenv("GUEST_USER") or "").strip()
     _p = (os.getenv("GUEST_PASS") or "").strip()
     if not _u or not _p:
@@ -178,12 +206,14 @@ def create_app(config_module=None) -> FastAPI:
             raise RuntimeError("Missing required environment variables: GUEST_USER/GUEST_PASS")
 
     @app.get("/vms", response_model=VMListResponse)
-    def list_vms() -> VMListResponse:
+    def list_vms(include_active: bool = True) -> VMListResponse:
         try:
             mapping = discover_vms(cfg.VM_ROOT)
         except Exception:
             mapping = {}
-        items = [VMListItem(name=k, vmx=str(v)) for k, v in mapping.items()]
+        items: list[VMListItem] = []
+        for n, vmx in mapping.items():
+            items.append(VMListItem(name=n, vmx=str(vmx), clients=[], active=False))
         return VMListResponse(root=str(cfg.VM_ROOT), vms=items)
 
     def _vmx_from_name_local(name: str) -> Path:
@@ -200,6 +230,40 @@ def create_app(config_module=None) -> FastAPI:
         snaps = list_snapshots(vmx)
         return SnapshotListResponse(vm=vm, snapshots=snaps)
 
+    @app.get("/rdp_clients")
+    def rdp_clients(vm: str = "init"):
+        vmx = _vmx_from_name_local(vm)
+        try:
+            ips = get_active_rdp_remote_ips(vmx)
+        except Exception:
+            ips = []
+        return {"vm": vm, "clients": ips}
+
+    @app.get("/rdp_active")
+    def rdp_active(vm: str = "init"):
+        vmx = _vmx_from_name_local(vm)
+        try:
+            active = bool(has_active_rdp_connections_fast(vmx))
+        except Exception:
+            active = False
+        return {"vm": vm, "active": active}
+
+    @app.get("/rdp_used")
+    def rdp_used(vm: str = "init"):
+        vmx = _vmx_from_name_local(vm)
+        try:
+            active = bool(has_active_rdp_connections_fast(vmx))
+        except Exception:
+            active = False
+        clients: list[str] = []
+        if active:
+            try:
+                clients = get_active_rdp_usernames_best(vmx)
+            except Exception:
+                clients = []
+        return {"vm": vm, "active": active, "clients": clients}
+
+
     @app.get("/vm_state")
     def vm_state(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
@@ -210,6 +274,12 @@ def create_app(config_module=None) -> FastAPI:
     def revert(payload: RevertRequest) -> RevertResponse:
         start_ts = time.perf_counter()
         vmx = _vmx_from_name_local(payload.vm)
+        try:
+            active_clients = get_active_rdp_remote_ips(vmx)
+        except Exception:
+            active_clients = []
+        if active_clients:
+            raise HTTPException(409, detail=f"Active RDP clients detected ({', '.join(active_clients)}); revert is blocked.")
         snaps = list_snapshots(vmx)
         if payload.snapshot not in snaps:
             raise HTTPException(404, f"Snapshot '{payload.snapshot}' not found.")
@@ -235,6 +305,15 @@ def create_app(config_module=None) -> FastAPI:
             task.started = time.time()
             task.progress = "스냅샷 복구 중"
             vmx = _vmx_from_name_local(vm)
+            try:
+                active_clients = get_active_rdp_remote_ips(vmx)
+            except Exception:
+                active_clients = []
+            if active_clients:
+                task.status = "failed"
+                task.error = f"Active RDP clients detected ({', '.join(active_clients)}); revert is blocked."
+                task.finished = time.time()
+                return
             run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
             if not is_vm_running(vmx):
                 task.progress = "전원 켜는 중"
