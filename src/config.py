@@ -89,3 +89,6 @@ SKIP_TOOLS_WAIT_WHEN_HEADLESS: bool = os.getenv("SKIP_TOOLS_WAIT_WHEN_HEADLESS",
 ENABLE_HEADLESS_IP_FALLBACK: bool = os.getenv("ENABLE_HEADLESS_IP_FALLBACK", "true").strip().lower() in {"1", "true", "yes"}
 
 DHCP_LEASES_PATHS_RAW: str = os.getenv("DHCP_LEASES_PATHS", "").strip()
+
+RDP_READY_WAIT_SEC: float = float(os.getenv("RDP_READY_WAIT_SEC", "45"))
+RDP_READY_PROBE_INTERVAL_SEC: float = float(os.getenv("RDP_READY_PROBE_INTERVAL_SEC", "0.5"))

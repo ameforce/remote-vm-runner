@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Iterable
 import os
+import socket
 import psutil
 import ipaddress
 
@@ -21,6 +22,9 @@ from .config import (
     DHCP_LEASES_PATHS_RAW,
     PREFERRED_SUBNETS,
     EXCLUDE_SUBNETS,
+    RDP_PORT,
+    RDP_READY_WAIT_SEC,
+    RDP_READY_PROBE_INTERVAL_SEC,
 )
 from .network import renew_network
 from .vmrun import run_vmrun
@@ -215,6 +219,41 @@ def wait_for_vm_ready(
                     last_ip = ip2
                 return ip2
         time.sleep(probe_interval)
+
+
+def wait_for_rdp_ready(
+    vmx: Path,
+    ip: str,
+    port: int | None = None,
+    timeout: float | None = None,
+    probe_interval: float | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> bool:
+    p = port or RDP_PORT
+    tout = timeout if isinstance(timeout, (int, float)) and timeout else RDP_READY_WAIT_SEC
+    interval = probe_interval if isinstance(probe_interval, (int, float)) and probe_interval else RDP_READY_PROBE_INTERVAL_SEC
+    start = time.perf_counter()
+    while True:
+        try:
+            try:
+                if not is_vm_running(vmx):
+                    if on_progress:
+                        on_progress("VM 전원 꺼짐 감지 – 전원 켜는 중")
+                    start_vm_async(vmx)
+                    time.sleep(min(2.0, interval))
+            except Exception:
+                pass
+            with socket.create_connection((ip, p), timeout=1.0):
+                if on_progress:
+                    on_progress("RDP 포트 준비 완료")
+                return True
+        except Exception:
+            pass
+        if time.perf_counter() - start > tout:
+            return False
+        if on_progress:
+            on_progress("RDP 대기 중…")
+        time.sleep(interval)
 
 
 def _is_headless() -> bool:
