@@ -205,10 +205,6 @@ def _compute_new_path(path_value: str, to_add: str) -> str:
 
 
 def ensure_path_contains(dir_path: str, *, prefer_machine: bool = True) -> str:
-    """
-    Ensure PATH permanently contains dir_path.
-    Returns scope used: "machine", "user", or "process" (non-Windows).
-    """
     dir_path = _normalize_path_entry(dir_path)
     if not dir_path:
         return "process" if os.name != "nt" else ("machine" if prefer_machine else "user")

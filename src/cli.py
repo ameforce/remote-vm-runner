@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List
+import logging
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,10 @@ import os
 import requests
 import tqdm
 from .config import RDP_TEMPLATE_PATH, RDP_CMD, ENABLE_CMDKEY_PRELOAD
+
+
+SUPPRESS_LIST_PRINT_ONCE: bool = False
+_LOG = logging.getLogger("src.cli")
 
 
 class VMClient:
@@ -32,14 +37,50 @@ class VMClient:
         resp.raise_for_status()
         return resp.json().get("snapshots", [])
 
+    def get_rdp_clients(self, vm_name: str) -> List[str]:
+        try:
+            resp = requests.get(f"{self.api_base}/rdp_clients", params={"vm": vm_name}, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("clients") or []
+            return [str(x) for x in items]
+        except requests.RequestException:
+            return []
+
+    def get_rdp_active(self, vm_name: str) -> bool:
+        try:
+            resp = requests.get(f"{self.api_base}/rdp_active", params={"vm": vm_name}, timeout=1)
+            resp.raise_for_status()
+            data = resp.json()
+            return bool(data.get("active"))
+        except requests.RequestException:
+            return False
+
+    def get_rdp_used(self, vm_name: str) -> tuple[bool, list[str]]:
+        url = f"{self.api_base}/rdp_used"
+        _LOG.debug("GET %s vm=%s", url, vm_name)
+        resp = requests.get(url, params={"vm": vm_name}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        active = bool(data.get("active"))
+        clients = list(data.get("clients") or [])
+        _LOG.debug("rdp_used vm=%s active=%s clients=%d", vm_name, active, len(clients))
+        return active, clients
+
     def get_vm_list(self) -> List[str]:
-        resp = requests.get(f"{self.api_base}/vms", timeout=10)
+        resp = requests.get(f"{self.api_base}/vms", params={"include_active": "false"}, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         items = data.get("vms", [])
         names = [item.get("name") for item in items if isinstance(item, dict) and item.get("name")]
         names.sort()
         return names
+
+    def get_vm_list_with_clients(self) -> list[dict]:
+        resp = requests.get(f"{self.api_base}/vms", params={"include_active": "true"}, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("vms", [])
 
     def connect_async(self) -> str:
         resp = requests.post(f"{self.api_base}/connect_async", json={"vm": self.vm_name}, timeout=10)
@@ -186,8 +227,12 @@ class VMClient:
 
     @staticmethod
     def choose(items: List[str]) -> str:
-        for idx, item in enumerate(items, 1):
-            print(f"[{idx}] {item}")
+        global SUPPRESS_LIST_PRINT_ONCE
+        if not SUPPRESS_LIST_PRINT_ONCE:
+            for idx, item in enumerate(items, 1):
+                print(f"[{idx}] {item}")
+        else:
+            SUPPRESS_LIST_PRINT_ONCE = False
         prompt = "번호 선택(Enter=1) ▶ "
         while True:
             sel_str = input(prompt).strip()
@@ -200,6 +245,30 @@ class VMClient:
                     print()
                     return items[sel]
             print("잘못된 입력, 다시 시도하세요.")
+
+    @staticmethod
+    def format_vm_list_with_rdp(names: List[str], active_fetch_fn, clients_fetch_fn) -> List[str]:
+        labeled: List[str] = []
+        active_map: dict[str, bool] = {}
+        for name in names:
+            try:
+                active_map[name] = bool(active_fetch_fn(name))
+            except Exception:
+                active_map[name] = False
+        for name in names:
+            if active_map.get(name):
+                clients = []
+                try:
+                    clients = list(clients_fetch_fn(name) or [])
+                except Exception:
+                    clients = []
+                if clients:
+                    labeled.append(f"{name} [RDP: {', '.join(clients)}]")
+                else:
+                    labeled.append(f"{name} [RDP: active]")
+            else:
+                labeled.append(name)
+        return labeled
 
     @staticmethod
     def create_rdp_file(ip: str, username: str) -> str:

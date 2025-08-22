@@ -24,7 +24,6 @@ def test_compute_new_path_and_contains_idempotent(monkeypatch):
 
 
 def test_ensure_guest_credentials_interactive_flow(monkeypatch):
-    # Clear env
     monkeypatch.delenv("GUEST_USER", raising=False)
     monkeypatch.delenv("GUEST_PASS", raising=False)
 

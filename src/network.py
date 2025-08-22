@@ -4,6 +4,7 @@ import ipaddress
 from pathlib import Path
 import logging
 from typing import Callable
+import re
 
 from .config import (
     EXCLUDE_SUBNETS,
@@ -26,9 +27,41 @@ import socket
 import tempfile
 import time
 import os
+import subprocess
 
 
 logger = logging.getLogger(__name__)
+
+
+_ACTIVE_KEYWORDS = {" active ", "활성", "activo", "attivo", "aktív", "aktief", "active"}
+
+
+def _line_has_active_keyword(text: str) -> bool:
+    low = f" {text.lower()} "
+    return any(k in low for k in _ACTIVE_KEYWORDS)
+
+
+def _line_is_remote_session(text: str) -> bool:
+    low = text.lower()
+    if "console" in low:
+        return False
+    if "rdp-tcp" in low or "rdp" in low:
+        return True
+    return bool(re.search(r"\brdp[-]tcp#?\d*\b", low))
+
+
+def _has_remote_active_from_session_tools(output: str) -> bool:
+    if not output:
+        return False
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.lower().startswith("username"):
+            continue
+        if _line_is_remote_session(line) and _line_has_active_keyword(line):
+            return True
+    return False
 
 def is_preferred_ip(ip_str: str) -> bool:
     try:
@@ -76,236 +109,28 @@ def _maybe_restart_vmware_tools(vmx: Path) -> None:
 
 
 def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
-    start_ts = time.perf_counter()
-    def over_budget() -> bool:
-        return (time.perf_counter() - start_ts) > RDP_CHECK_BUDGET_SEC
-
     try:
-        st = run_vmrun(["checkToolsState", str(vmx)], timeout=8)
-        if "running" not in st.lower():
-            if ASSUME_ACTIVE_ON_FAILURE:
-                logger.warning("RDP check skipped – VMware Tools not running; assuming ACTIVE: vmx=%s", vmx)
-                return True
-            logger.warning("RDP check skipped – VMware Tools not running; assuming INACTIVE: vmx=%s", vmx)
-            return False
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=5)
+        ip = (ip_raw or "").strip()
     except Exception as exc:
-        logger.debug("checkToolsState failed: %s", exc)
-
-    if not over_budget():
-        try:
-            direct_out = run_in_guest_capture(
-                vmx,
-                r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-                "-NoProfile",
-                "-Command",
-                (
-                    f"if((Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue))"
-                    "{'YES'} else {'NO'}"
-                ),
-                timeout=RDP_PS_TIMEOUT_SEC,
-            )
-        except Exception as exc:
-            logger.debug("RDP PS(direct) probe failed: %s", exc)
-            direct_out = ""
-        if direct_out:
-            low = direct_out.strip().upper()
-            if "YES" in low:
-                logger.info("RDP active detected by PS(direct) – vmx=%s port=%s", vmx, rdp_port)
-                return True
-            if "NO" in low:
-                logger.debug("RDP inactive confirmed by PS(direct) – vmx=%s port=%s", vmx, rdp_port)
-                return False
-
-    if not over_budget():
-        try:
-            guest_tmp = r"C:\\Temp\\rdp_probe.txt"
-            ps_script = (
-                f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue); "
-                "if($c){'YES'} else {'NO'} | Out-File -Encoding ASCII -Force '" + guest_tmp + "'"
-            )
-            run_script_in_guest_capture(
-                vmx,
-                r"C:\\Windows\\System32\\cmd.exe",
-                f"/c powershell -NoProfile -Command \"{ps_script}\"",
-                timeout=RDP_PS_TIMEOUT_SEC,
-            )
-            with tempfile.NamedTemporaryFile(delete=False) as tf:
-                host_tmp = tf.name
-            try:
-                if copy_from_guest(vmx, guest_tmp, host_tmp, timeout=10):
-                    with open(host_tmp, "rb") as f:
-                        data = f.read().decode("ascii", errors="ignore").strip()
-                    if "YES" in data:
-                        logger.debug("RDP active detected by PS(file) – vmx=%s port=%s", vmx, rdp_port)
-                        os.remove(host_tmp)
-                        return True
-                    if "NO" in data:
-                        logger.debug("RDP inactive confirmed by PS(file) – vmx=%s port=%s", vmx, rdp_port)
-                        os.remove(host_tmp)
-                        return False
-            finally:
-                try:
-                    os.remove(host_tmp)
-                except Exception:
-                    pass
-        except Exception as exc:
-            logger.debug("file-based RDP probe failed: %s", exc)
-
-    try:
-        raw = run_vmrun(["-gu", GUEST_USER, "-gp", GUEST_PASS, "listProcessesInGuest", str(vmx)], timeout=10)
-    except Exception as exc:
-        logger.debug("listProcessesInGuest failed: %s", exc)
-        raw = ""
-    if raw:
-        low = raw.lower()
-        if "rdpclip.exe" in low:
-            logger.debug("RDP active detected by process(rdpclip) – vmx=%s", vmx)
-            return True
-
-    ps_script = (
-        f"$c=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue); "
-        "if($c){ Set-Content -Path 'C:\\Temp\\rdp_probe.txt' -Value 'YES' -Encoding ASCII } "
-        "else{ Set-Content -Path 'C:\\Temp\\rdp_probe.txt' -Value 'NO' -Encoding ASCII }"
-    )
-    out = None
-    ps_err: str | None = None
-    try:
-        out = run_script_in_guest_capture(
-            vmx,
-            r"C:\\Windows\\System32\\cmd.exe",
-            f"/c powershell -NoProfile -Command \"{ps_script}\"; Get-Content 'C:\\Temp\\rdp_probe.txt'",
-            timeout=RDP_PS_TIMEOUT_SEC,
-        ).strip()
-    except Exception as exc:
-        ps_err = str(exc)
-        logger.debug("RDP PS probe failed: %s", exc)
-    if out:
-        if "YES" in out:
-            logger.debug("RDP active detected by PS(stdout) – vmx=%s port=%s", vmx, rdp_port)
-            return True
-        if "NO" in out:
-            logger.debug("RDP inactive confirmed by PS(stdout) – vmx=%s port=%s", vmx, rdp_port)
-            return False
-
-    q_out = None
-    quser_err: str | None = None
-    try:
-        q_out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\quser.exe", timeout=RDP_QUSER_TIMEOUT_SEC)
-    except Exception as exc:
-        quser_err = str(exc)
-        logger.debug("RDP quser probe failed: %s", exc)
-    if q_out:
-        keywords = {" active ", "활성", "activo", "attivo", "aktív", "aktief"}
-        for line in q_out.splitlines():
-            low = line.strip().lower()
-            if low.startswith("username"):
-                continue
-            if any(k in low for k in keywords):
-                logger.debug("RDP active detected by quser – vmx=%s", vmx)
-                return True
-
-    try:
-        q2_out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\query.exe", "user", timeout=RDP_QUSER_TIMEOUT_SEC)
-    except Exception as exc:
-        logger.debug("RDP query user probe failed: %s", exc)
-        q2_out = ""
-    if q2_out:
-        keywords = {" active ", "활성", "activo", "attivo", "aktív", "aktief"}
-        for line in q2_out.splitlines():
-            low = line.strip().lower()
-            if any(k in low for k in keywords):
-                logger.debug("RDP active detected by query user – vmx=%s", vmx)
-                return True
-
-    try:
-        qw_out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\qwinsta.exe", timeout=RDP_QUSER_TIMEOUT_SEC)
-    except Exception as exc:
-        logger.debug("RDP qwinsta probe failed: %s", exc)
-        qw_out = ""
-    if qw_out:
-        if "active" in qw_out.lower() or "활성" in qw_out.lower():
-            logger.debug("RDP active detected by qwinsta – vmx=%s", vmx)
-            return True
-
-    try:
-        ns_out = run_in_guest_capture(
-            vmx,
-            r"C:\\Windows\\System32\\cmd.exe",
-            "/c netstat -ano | find \"%d\" | find \"ESTABLISHED\"" % rdp_port,
-            timeout=RDP_QUSER_TIMEOUT_SEC,
-        )
-    except Exception as exc:
-        logger.debug("RDP netstat probe failed: %s", exc)
-        ns_out = ""
-    if ns_out and ns_out.strip():
-        logger.debug("RDP active detected by netstat – vmx=%s port=%s", vmx, rdp_port)
-        return True
-
-    if ASSUME_ACTIVE_ON_FAILURE:
-        if ASSUME_ACTIVE_IF_RDP_LISTENING:
-            try:
-                ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=10)
-                ip = ip_raw.strip()
-            except Exception:
-                ip = ""
-            if ip:
-                try:
-                    with socket.create_connection((ip, rdp_port), timeout=TCP_PROBE_TIMEOUT_SEC):
-                        logger.debug(
-                            "RDP status inconclusive – TCP probe succeeded; assuming ACTIVE: vmx=%s ip=%s port=%s",
-                            vmx,
-                            ip,
-                            rdp_port,
-                        )
-                        return True
-                except Exception:
-                    pass
-        _maybe_restart_vmware_tools(vmx)
-        diag = ""
-        try:
-            who = run_script_in_guest_capture(
-                vmx,
-                r"C:\\Windows\\System32\\cmd.exe",
-                "/c whoami",
-                timeout=8,
-            )
-            diag = f"whoami={'none' if not who else who.strip()}"
-        except Exception as exc:
-            diag = f"whoami_error={exc}"
-        logger.debug(
-            "RDP status inconclusive – assuming ACTIVE for safety: vmx=%s port=%s ps_out=%s quser_out=%s ps_err=%s quser_err=%s %s",
-            vmx,
-            rdp_port,
-            'none' if not out else 'len>0',
-            'none' if not q_out else 'len>0',
-            ps_err or 'none',
-            quser_err or 'none',
-            diag,
-        )
-        return True
-    return False
+        logger.debug("getGuestIPAddress failed: %s", exc)
+        ip = ""
+    if not ip:
+        return False
+    users = get_active_rdp_usernames_host(ip)
+    return bool(users)
 
 
 def has_active_rdp_connections_fast(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
     try:
-        out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\query.exe", "user", timeout=RDP_QUSER_TIMEOUT_SEC)
-        if out and (" active " in out.lower() or "활성" in out.lower()):
-            return True
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=3)
+        ip = (ip_raw or "").strip()
     except Exception:
-        pass
-    try:
-        out2 = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\qwinsta.exe", timeout=RDP_QUSER_TIMEOUT_SEC)
-        if out2 and ("active" in out2.lower() or "활성" in out2.lower()):
-            return True
-    except Exception:
-        pass
-    try:
-        raw = run_vmrun(["-gu", GUEST_USER, "-gp", GUEST_PASS, "listProcessesInGuest", str(vmx)], timeout=5)
-        if raw and "rdpclip.exe" in raw.lower():
-            return True
-    except Exception as exc:
-        logger.debug("fast listProcessesInGuest failed: %s", exc)
-    return False
+        ip = ""
+    if not ip:
+        return False
+    users = get_active_rdp_usernames_host(ip)
+    return bool(users)
 
 
 def has_active_rdp_connections_tcp(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
@@ -343,3 +168,153 @@ def renew_network(vmx: Path, on_progress: Callable[[str], None] | None = None) -
         except Exception as exc:
             log(f"{title} 실패: {exc}")
     log("네트워크 재협상 종료")
+
+
+def get_active_rdp_remote_ips(vmx: Path, rdp_port: int = RDP_PORT) -> list[str]:
+    try:
+        ps_cmd = (
+            f"$ips=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty RemoteAddress | Sort-Object -Unique); "
+            "if($ips){ $ips -join '\n' }"
+        )
+        out = run_in_guest_capture(
+            vmx,
+            r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "-NoProfile",
+            "-Command",
+            ps_cmd,
+            timeout=RDP_PS_TIMEOUT_SEC,
+        )
+        if out:
+            ips = [ln.strip() for ln in out.splitlines() if ln.strip()]
+            cleaned: list[str] = []
+            for ip in ips:
+                try:
+                    ip_clean = ip.split("%", 1)[0]
+                    ipaddress.ip_address(ip_clean)
+                    cleaned.append(ip_clean)
+                except Exception:
+                    pass
+            if cleaned:
+                return list(dict.fromkeys(cleaned))
+    except Exception as exc:
+        logger.debug("PS get_active_rdp_remote_ips failed: %s", exc)
+
+    try:
+        ns_out = run_in_guest_capture(
+            vmx,
+            r"C:\\Windows\\System32\\cmd.exe",
+            "/c",
+            f"netstat -ano | find \"ESTABLISHED\" | find \":{rdp_port}\"",
+            timeout=RDP_QUSER_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        logger.debug("netstat get_active_rdp_remote_ips failed: %s", exc)
+        ns_out = ""
+
+    if ns_out:
+        remotes: list[str] = []
+        for line in ns_out.splitlines():
+            parts = [p for p in line.split() if p]
+            if len(parts) >= 3:
+                remote = parts[2]
+                try:
+                    if remote.startswith("[") and "]" in remote:
+                        host = remote[1:].split("]", 1)[0]
+                    else:
+                        host = remote.rsplit(":", 1)[0]
+                    host = host.split("%", 1)[0]
+                    ipaddress.ip_address(host)
+                    remotes.append(host)
+                except Exception:
+                    continue
+        if remotes:
+            return list(dict.fromkeys(remotes))
+
+    return []
+
+
+def get_active_rdp_usernames(vmx: Path) -> list[str]:
+    outputs: list[str] = []
+    try:
+        out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\query.exe", "user", timeout=RDP_QUSER_TIMEOUT_SEC)
+        if out:
+            outputs.append(out)
+    except Exception as exc:
+        logger.debug("query user for usernames failed: %s", exc)
+    try:
+        out2 = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\quser.exe", timeout=RDP_QUSER_TIMEOUT_SEC)
+        if out2:
+            outputs.append(out2)
+    except Exception as exc:
+        logger.debug("quser for usernames failed: %s", exc)
+    usernames: list[str] = []
+    for out in outputs:
+        for raw in out.splitlines():
+            line = raw.strip()
+            if not line or line.lower().startswith("username"):
+                continue
+            if not (_line_is_remote_session(line) and _line_has_active_keyword(line)):
+                continue
+            token_line = line.lstrip(">").strip()
+            first = token_line.split()
+            if first:
+                name = first[0]
+                if name and name.lower() != "username" and name not in usernames:
+                    usernames.append(name)
+    return usernames
+
+
+def _get_guest_ip_quick(vmx: Path) -> str:
+    try:
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=3)
+        return (ip_raw or "").strip()
+    except Exception:
+        return ""
+
+
+def get_active_rdp_usernames_host(ip: str) -> list[str]:
+    if not ip:
+        return []
+    commands = [
+        [r"C:\\Windows\\System32\\query.exe", "user", f"/server:{ip}"],
+        [r"C:\\Windows\\System32\\quser.exe", f"/server:{ip}"],
+        [r"C:\\Windows\\System32\\qwinsta.exe", f"/server:{ip}"],
+    ]
+    outputs: list[str] = []
+    for cmd in commands:
+        try:
+            try:
+                if str(cmd[0]).lower().endswith("query.exe"):
+                    logger.debug("host query.exe cmd: %s", " ".join(cmd))
+            except Exception:
+                pass
+            cp = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            out = (cp.stdout or "").strip()
+            if out:
+                outputs.append(out)
+        except Exception as exc:
+            logger.debug("host-side session probe failed: %s cmd=%s", exc, cmd)
+    users: list[str] = []
+    for out in outputs:
+        for raw in out.splitlines():
+            line = raw.strip()
+            if not line or line.lower().startswith("username"):
+                continue
+            if not (_line_is_remote_session(line) and _line_has_active_keyword(line)):
+                continue
+            token_line = line.lstrip(">").strip()
+            parts = token_line.split()
+            if parts:
+                name = parts[0]
+                if name and name.lower() != "username" and name not in users:
+                    users.append(name)
+    return users
+
+
+def get_active_rdp_usernames_best(vmx: Path) -> list[str]:
+    users = get_active_rdp_usernames(vmx)
+    if users:
+        return users
+    ip = _get_guest_ip_quick(vmx)
+    return get_active_rdp_usernames_host(ip)

@@ -47,6 +47,8 @@ class TaskInfo(BaseModel):
 class VMListItem(BaseModel):
     name: str
     vmx: str
+    clients: List[str] = Field(default_factory=list)
+    active: bool = Field(default=False)
 
 
 class VMListResponse(BaseModel):

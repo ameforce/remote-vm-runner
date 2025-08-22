@@ -148,7 +148,6 @@ def test_idle_shutdown_only_on_pressure_skips_when_no_pressure(monkeypatch, tmp_
     def fake_shutdown(vmx, mode="soft"):
         calls.append((str(vmx), mode))
 
-    # Host not under pressure
     monkeypatch.setattr(idle, "_is_pressure_high", lambda: (False, 10.0, 10.0))
     monkeypatch.setattr(idle, "run_vmrun", fake_run_vmrun)
     monkeypatch.setattr(idle, "_shutdown_vm", fake_shutdown)
@@ -177,7 +176,6 @@ def test_idle_shutdown_only_on_pressure_triggers_on_pressure(monkeypatch, tmp_pa
     def fake_shutdown(vmx, mode="soft"):
         calls.append((str(vmx), mode))
 
-    # Host under pressure
     monkeypatch.setattr(idle, "_is_pressure_high", lambda: (True, 1.0, 97.0))
     monkeypatch.setattr(idle, "run_vmrun", fake_run_vmrun)
     monkeypatch.setattr(idle, "_shutdown_vm", fake_shutdown)

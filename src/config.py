@@ -59,8 +59,8 @@ RDP_PORT: int = int(os.getenv("RDP_PORT", "3389"))
 
 ASSUME_ACTIVE_ON_FAILURE: bool = os.getenv("ASSUME_ACTIVE_ON_FAILURE", "false").strip().lower() in {"1", "true", "yes"}
 
-RDP_PS_TIMEOUT_SEC: int = int(os.getenv("RDP_PS_TIMEOUT_SEC", "20"))
-RDP_QUSER_TIMEOUT_SEC: int = int(os.getenv("RDP_QUSER_TIMEOUT_SEC", "15"))
+RDP_PS_TIMEOUT_SEC: int = int(os.getenv("RDP_PS_TIMEOUT_SEC", "10"))
+RDP_QUSER_TIMEOUT_SEC: int = int(os.getenv("RDP_QUSER_TIMEOUT_SEC", "6"))
 
 ASSUME_ACTIVE_IF_RDP_LISTENING: bool = os.getenv("ASSUME_ACTIVE_IF_RDP_LISTENING", "true").strip().lower() in {"1", "true", "yes"}
 TCP_PROBE_TIMEOUT_SEC: float = float(os.getenv("TCP_PROBE_TIMEOUT_SEC", "1.0"))
@@ -92,3 +92,13 @@ DHCP_LEASES_PATHS_RAW: str = os.getenv("DHCP_LEASES_PATHS", "").strip()
 
 RDP_READY_WAIT_SEC: float = float(os.getenv("RDP_READY_WAIT_SEC", "45"))
 RDP_READY_PROBE_INTERVAL_SEC: float = float(os.getenv("RDP_READY_PROBE_INTERVAL_SEC", "0.5"))
+
+RDP_STATUS_CACHE_TTL_SEC: int = int(os.getenv("RDP_STATUS_CACHE_TTL_SEC", "30"))
+RDP_CLIENTS_CACHE_TTL_SEC: int = int(os.getenv("RDP_CLIENTS_CACHE_TTL_SEC", "30"))
+RDP_ACTIVE_SCAN_MAX_WORKERS: int = max(1, int(os.getenv("RDP_ACTIVE_SCAN_MAX_WORKERS", "4")))
+RDP_CLIENTS_SCAN_MAX_WORKERS: int = max(1, int(os.getenv("RDP_CLIENTS_SCAN_MAX_WORKERS", "2")))
+RDP_HINT_MAX_WORKERS: int = max(1, int(os.getenv("RDP_HINT_MAX_WORKERS", "8")))
+
+RDP_MONITOR_ENABLED: bool = os.getenv("RDP_MONITOR_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+RDP_MONITOR_INTERVAL_SEC: int = int(os.getenv("RDP_MONITOR_INTERVAL_SEC", "20"))
+RDP_MONITOR_MAX_WORKERS: int = max(1, int(os.getenv("RDP_MONITOR_MAX_WORKERS", "2")))
