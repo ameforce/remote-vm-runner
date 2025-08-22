@@ -83,6 +83,58 @@ def test_has_active_rdp_connections_fallback_quser(monkeypatch, tmp_path: Path):
     assert network.has_active_rdp_connections(vmx) is True
 
 
+def test_fast_detector_uses_lightweight_tools(monkeypatch, tmp_path: Path):
+    vmx = tmp_path / "D.vmx"
+    vmx.write_text(".")
+
+    calls = {"query": 0, "qwinsta": 0, "list": 0}
+
+    def fake_run_in_guest_capture(vmx_path, program, *args, timeout=30):
+        if "query.exe" in program:
+            calls["query"] += 1
+            return " user rdp-tcp#1 2 Active "
+        if "qwinsta.exe" in program:
+            calls["qwinsta"] += 1
+            return "rdp-tcp 1 Active"
+        return ""
+
+    def fake_vmrun(args, timeout=5):
+        calls["list"] += 1
+        return "displayName rdpclip.exe"
+
+    monkeypatch.setattr(network, "run_in_guest_capture", fake_run_in_guest_capture)
+    monkeypatch.setattr(network, "run_vmrun", fake_vmrun)
+
+    assert network.has_active_rdp_connections_fast(vmx) is True
+    assert calls["query"] >= 1
+
+
+def test_tcp_detector_is_passive(monkeypatch, tmp_path: Path):
+    vmx = tmp_path / "E.vmx"
+    vmx.write_text(".")
+
+    def fake_vmrun(args, timeout=6):
+        assert args[0] == "getGuestIPAddress"
+        return "1.2.3.4"
+
+    class Sock:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def close(self):
+            pass
+
+    def fake_create_connection(addr, timeout=1.0):
+        assert addr == ("1.2.3.4", 3389)
+        return Sock()
+
+    monkeypatch.setattr(network, "run_vmrun", fake_vmrun)
+    monkeypatch.setattr(network.socket, "create_connection", fake_create_connection)
+
+    assert network.has_active_rdp_connections_tcp(vmx) is True
+
+
 def test_idle_shutdown_only_on_pressure_skips_when_no_pressure(monkeypatch, tmp_path: Path):
     vmx_file = tmp_path / "P.vmx"
     vmx_file.write_text(".")
@@ -100,7 +152,7 @@ def test_idle_shutdown_only_on_pressure_skips_when_no_pressure(monkeypatch, tmp_
     monkeypatch.setattr(idle, "_is_pressure_high", lambda: (False, 10.0, 10.0))
     monkeypatch.setattr(idle, "run_vmrun", fake_run_vmrun)
     monkeypatch.setattr(idle, "_shutdown_vm", fake_shutdown)
-    monkeypatch.setattr(idle, "has_active_rdp_connections", lambda vmx, rdp_port=3389: False)
+    monkeypatch.setattr(idle, "has_active_rdp_connections", lambda vmx, rdp_port=3389: (_ for _ in ()).throw(AssertionError("should not be called")))
     idle.IDLE_DB.clear()
 
     base = idle.time.time()

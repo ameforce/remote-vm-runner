@@ -22,6 +22,7 @@ from .config import (
     REQUIRE_GUEST_CREDENTIALS,
     VM_MAP,
     VM_ROOT,
+    SKIP_TOOLS_WAIT_WHEN_HEADLESS,
 )
 from .discovery import discover_vms, find_vmx_for_name
 from .idle import IDLE_DB, LAST_STATUS, watchdog_tick
@@ -46,6 +47,7 @@ from .vmware import (
     start_vm_async,
     wait_for_tools_ready,
     wait_for_vm_ready,
+    wait_for_rdp_ready,
 )
 
 
@@ -77,8 +79,9 @@ def _revert_job(vm: str, snap: str, task_id: str) -> None:
             task.progress = "전원 켜는 중"
             start_vm_async(vmx)
         try:
-            task.progress = "Tools 대기 중"
-            wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+            if not SKIP_TOOLS_WAIT_WHEN_HEADLESS:
+                task.progress = "Tools 대기 중"
+                wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
         except Exception:
             pass
         task.progress = "IP 획득 중"
@@ -88,6 +91,12 @@ def _revert_job(vm: str, snap: str, task_id: str) -> None:
         renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
         task.progress = "IP 재확인(2차)"
         ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
+        task.progress = "RDP 준비 대기 중"
+        if not wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m)):
+            task.progress = "RDP 대기 초과 – 네트워크 재협상"
+            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
+            task.progress = "RDP 재대기"
+            wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m))
         try:
             socket.create_connection((ip, 3389), timeout=3).close()
         except Exception:
@@ -117,6 +126,12 @@ def _connect_job(vm: str, task_id: str) -> None:
             start_vm_async(vmx)
         probe, tout = _calc_poll_params(vm, "connect")
         ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
+        task.progress = "RDP 준비 대기 중"
+        if not wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m)):
+            task.progress = "RDP 대기 초과 – 네트워크 재협상"
+            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
+            task.progress = "RDP 재대기"
+            wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m))
         if not is_preferred_ip(ip):
             task.progress = "예상치 않은 IP – 네트워크 재협상"
             renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
@@ -202,7 +217,8 @@ def create_app(config_module=None) -> FastAPI:
         if not is_vm_running(vmx):
             start_vm_async(vmx)
         try:
-            wait_for_tools_ready(vmx, timeout=60)
+            if not SKIP_TOOLS_WAIT_WHEN_HEADLESS:
+                wait_for_tools_ready(vmx, timeout=60)
         except Exception:
             pass
         probe, tout = _calc_poll_params(payload.vm, "revert")
@@ -270,6 +286,12 @@ def create_app(config_module=None) -> FastAPI:
                 start_vm_async(vmx)
             probe, tout = _calc_poll_params(vm, "connect")
             ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
+            task.progress = "RDP 준비 대기 중"
+            if not wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m)):
+                task.progress = "RDP 대기 초과 – 네트워크 재협상"
+                renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
+                task.progress = "RDP 재대기"
+                wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m))
             if not is_preferred_ip(ip):
                 task.progress = "예상치 않은 IP – 네트워크 재협상"
                 renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))

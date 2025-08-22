@@ -15,6 +15,8 @@ from .config import (
 	MIN_AVAILABLE_MEM_GB,
 	RDP_PORT,
 	RDP_DETECTION_MODE,
+    RDP_CHECK_CONCURRENCY,
+    RDP_CHECK_BATCH_SIZE,
 )
 from .models import IdlePolicy, IdleState
 from .network import has_active_rdp_connections
@@ -126,25 +128,42 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 
 	active_map: dict[Path, bool] = {}
 	if vmx_list:
-		max_workers = min(8, max(1, len(vmx_list)))
-		with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rdpchk") as pool:
-			if RDP_DETECTION_MODE == "thorough":
-				checker = has_active_rdp_connections
-			else:
-				from .network import has_active_rdp_connections_fast as _fast
-				checker = _fast if RDP_DETECTION_MODE in {"fast", "hybrid"} else has_active_rdp_connections
-			future_to_vmx = {pool.submit(checker, vmx, RDP_PORT): vmx for vmx in vmx_list}
-			for fut in as_completed(future_to_vmx):
-				vmx = future_to_vmx[fut]
-				try:
-					active = bool(fut.result())
-				except Exception:
-					active = False
-				active_map[vmx] = active
-				key = str(vmx)
-				name = vmx.parent.name
-				if active:
-					IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
+		if RDP_CHECK_BATCH_SIZE > 0:
+			vmx_targets = vmx_list[: RDP_CHECK_BATCH_SIZE]
+		else:
+			vmx_targets = vmx_list
+		if RDP_DETECTION_MODE == "thorough":
+			checker = has_active_rdp_connections
+		elif RDP_DETECTION_MODE in {"fast", "hybrid"}:
+			from .network import has_active_rdp_connections_fast as _fast
+			checker = _fast
+		elif RDP_DETECTION_MODE == "tcp":
+			from .network import has_active_rdp_connections_tcp as _tcp
+			checker = _tcp
+		elif RDP_DETECTION_MODE == "off":
+			checker = None
+		else:
+			from .network import has_active_rdp_connections_fast as _fast
+			checker = _fast
+
+		if not pressure:
+			checker = None
+
+		if checker is not None:
+			max_workers = max(1, min(RDP_CHECK_CONCURRENCY, len(vmx_targets)))
+			with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rdpchk") as pool:
+				future_to_vmx = {pool.submit(checker, vmx, RDP_PORT): vmx for vmx in vmx_targets}
+				for fut in as_completed(future_to_vmx):
+					vmx = future_to_vmx[fut]
+					try:
+						active = bool(fut.result())
+					except Exception:
+						active = False
+					active_map[vmx] = active
+					key = str(vmx)
+					name = vmx.parent.name
+					if active:
+						IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
 
 	victims_total = 0
 	for vmx in vmx_list:
