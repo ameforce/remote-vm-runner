@@ -58,7 +58,6 @@ class VMListResponse(BaseModel):
 
 class IdlePolicy(BaseModel):
     enabled: bool = Field(default=False, description="Enable idle shutdown watchdog")
-    idle_minutes: int = Field(default=5, description="Minutes of no RDP activity before shutdown (0 = immediate)")
     check_interval_sec: int = Field(default=60, description="Watchdog tick interval seconds")
     mode: str = Field(default="soft", description="Shutdown mode: soft|hard")
     only_on_pressure: bool = Field(
