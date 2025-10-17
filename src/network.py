@@ -10,10 +10,8 @@ from .config import (
     EXCLUDE_SUBNETS,
     PREFERRED_SUBNETS,
     RDP_PORT,
-    ASSUME_ACTIVE_ON_FAILURE,
     RDP_PS_TIMEOUT_SEC,
     RDP_QUSER_TIMEOUT_SEC,
-    ASSUME_ACTIVE_IF_RDP_LISTENING,
     TCP_PROBE_TIMEOUT_SEC,
     RDP_CHECK_BUDGET_SEC,
     GUEST_USER,
@@ -106,31 +104,6 @@ def _maybe_restart_vmware_tools(vmx: Path) -> None:
         logger.warning("Attempted VMware Tools restart inside guest: vmx=%s", vmx)
     except Exception as exc:
         logger.debug("VMTools start failed: %s", exc)
-
-
-def has_active_rdp_connections(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
-    try:
-        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=5)
-        ip = (ip_raw or "").strip()
-    except Exception as exc:
-        logger.debug("getGuestIPAddress failed: %s", exc)
-        ip = ""
-    if not ip:
-        return False
-    users = get_active_rdp_usernames_host(ip)
-    return bool(users)
-
-
-def has_active_rdp_connections_fast(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
-    try:
-        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=3)
-        ip = (ip_raw or "").strip()
-    except Exception:
-        ip = ""
-    if not ip:
-        return False
-    users = get_active_rdp_usernames_host(ip)
-    return bool(users)
 
 
 def has_active_rdp_connections_tcp(vmx: Path, rdp_port: int = RDP_PORT) -> bool:

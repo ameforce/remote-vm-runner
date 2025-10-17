@@ -51,34 +51,23 @@ EXCLUDE_SUBNETS = [ipaddress.ip_network(net.strip()) for net in _ex_env.split(',
 
 ENABLE_IDLE_WATCHDOG: bool = True
 IDLE_CHECK_INTERVAL_SEC: int = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "20"))
-IDLE_SHUTDOWN_MINUTES: int = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "30"))
-IDLE_SHUTDOWN_SECONDS: int = max(30, IDLE_SHUTDOWN_MINUTES * 60)
 IDLE_SHUTDOWN_MODE: str = os.getenv("IDLE_SHUTDOWN_MODE", "soft")
 IDLE_ONLY_ON_PRESSURE: bool = os.getenv("IDLE_ONLY_ON_PRESSURE", "true").strip().lower() in {"1", "true", "yes"}
 RDP_PORT: int = int(os.getenv("RDP_PORT", "3389"))
 
-ASSUME_ACTIVE_ON_FAILURE: bool = os.getenv("ASSUME_ACTIVE_ON_FAILURE", "false").strip().lower() in {"1", "true", "yes"}
-
 RDP_PS_TIMEOUT_SEC: int = int(os.getenv("RDP_PS_TIMEOUT_SEC", "10"))
 RDP_QUSER_TIMEOUT_SEC: int = int(os.getenv("RDP_QUSER_TIMEOUT_SEC", "6"))
 
-ASSUME_ACTIVE_IF_RDP_LISTENING: bool = os.getenv("ASSUME_ACTIVE_IF_RDP_LISTENING", "true").strip().lower() in {"1", "true", "yes"}
 TCP_PROBE_TIMEOUT_SEC: float = float(os.getenv("TCP_PROBE_TIMEOUT_SEC", "1.0"))
-
-RDP_CHECK_BUDGET_SEC: float = float(os.getenv("RDP_CHECK_BUDGET_SEC", "1.0"))
 
 ENABLE_TOOLS_SELF_HEAL: bool = os.getenv("ENABLE_TOOLS_SELF_HEAL", "true").strip().lower() in {"1", "true", "yes"}
 TOOLS_RESTART_COOLDOWN_SEC: int = int(os.getenv("TOOLS_RESTART_COOLDOWN_SEC", "600"))
 
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
 MAX_SHUTDOWNS_PER_TICK: int = int(os.getenv("MAX_SHUTDOWNS_PER_TICK", "2"))
-CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "85"))
+CPU_PRESSURE_THRESHOLD_PCT: int = int(os.getenv("CPU_PRESSURE_THRESHOLD_PCT", "90"))
 CPU_SAMPLE_DURATION_SEC: float = float(os.getenv("CPU_SAMPLE_DURATION_SEC", "1.0"))
 CPU_CONSECUTIVE_TICKS: int = int(os.getenv("CPU_CONSECUTIVE_TICKS", "3"))
-
-_RDP_DETECTION_MODE_RAW = os.getenv("RDP_DETECTION_MODE", "tcp").strip().lower()
-_ALLOWED_RDP_MODES = {"fast", "hybrid", "thorough", "tcp", "off"}
-RDP_DETECTION_MODE: str = _RDP_DETECTION_MODE_RAW if _RDP_DETECTION_MODE_RAW in _ALLOWED_RDP_MODES else "hybrid"
 
 RDP_CHECK_CONCURRENCY: int = max(1, int(os.getenv("RDP_CHECK_CONCURRENCY", "2")))
 RDP_CHECK_BATCH_SIZE: int = max(0, int(os.getenv("RDP_CHECK_BATCH_SIZE", "0")))

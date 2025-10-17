@@ -10,16 +10,13 @@ from . import metrics
 from .config import (
 	CPU_CONSECUTIVE_TICKS,
 	CPU_PRESSURE_THRESHOLD_PCT,
-	IDLE_SHUTDOWN_MINUTES,
 	MAX_SHUTDOWNS_PER_TICK,
 	MIN_AVAILABLE_MEM_GB,
 	RDP_PORT,
-	RDP_DETECTION_MODE,
     RDP_CHECK_CONCURRENCY,
     RDP_CHECK_BATCH_SIZE,
 )
 from .models import IdlePolicy, IdleState
-from .network import has_active_rdp_connections
 from .vmrun import run_vmrun
 
 
@@ -33,19 +30,19 @@ _LAST_CPU_PRESSURE = False
 IDLE_DB: dict[str, IdleState] = {}
 
 LAST_STATUS: Dict[str, Any] = {
-	"last_tick_at": None,
-	"vm_count": 0,
-	"pressure": False,
-	"mem_pressure": False,
-	"cpu_pressure": False,
-	"cpu_over_ticks": 0,
-	"cpu_required_ticks": 0,
-	"available_mem_gb": None,
-	"cpu_percent": None,
-	"cpu_used_percent": None,
-	"cpu_idle_percent": None,
-	"stopped_count": 0,
-	"last_error": None,
+    "last_tick_at": None,
+    "vm_count": 0,
+    "pressure": False,
+    "mem_pressure": False,
+    "cpu_pressure": False,
+    "cpu_over_ticks": 0,
+    "cpu_required_ticks": 0,
+    "available_mem_gb": None,
+    "cpu_percent": None,
+    "cpu_used_percent": None,
+    "cpu_idle_percent": None,
+    "stopped_count": 0,
+    "last_error": None,
 }
 
 
@@ -111,7 +108,6 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 	LAST_STATUS["vm_count"] = len(vmx_list)
 
 	now = time.time()
-	threshold_seconds = max(0, int(policy.idle_minutes) * 60)
 
 	pressure, avail, cpu_pct_used = _is_pressure_high()
 	LAST_STATUS["pressure"] = pressure
@@ -132,22 +128,8 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 			vmx_targets = vmx_list[: RDP_CHECK_BATCH_SIZE]
 		else:
 			vmx_targets = vmx_list
-		if RDP_DETECTION_MODE == "thorough":
-			checker = has_active_rdp_connections
-		elif RDP_DETECTION_MODE in {"fast", "hybrid"}:
-			from .network import has_active_rdp_connections_fast as _fast
-			checker = _fast
-		elif RDP_DETECTION_MODE == "tcp":
-			from .network import has_active_rdp_connections_tcp as _tcp
-			checker = _tcp
-		elif RDP_DETECTION_MODE == "off":
-			checker = None
-		else:
-			from .network import has_active_rdp_connections_fast as _fast
-			checker = _fast
-
-		if not pressure:
-			checker = None
+		from .network import has_active_rdp_connections_tcp as _tcp
+		checker = _tcp
 
 		if checker is not None:
 			max_workers = max(1, min(RDP_CHECK_CONCURRENCY, len(vmx_targets)))
@@ -175,28 +157,18 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 			IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now, shutting_down=False)
 			continue
 
-		if threshold_seconds == 0:
-			continue
-
 		if state is None or state.last_active_ts is None:
 			IDLE_DB[key] = IdleState(vm=name, vmx=str(vmx), last_active_ts=now)
 			continue
 
-		idle_secs = now - state.last_active_ts
-		if idle_secs >= threshold_seconds and not state.shutting_down:
+		if not state.shutting_down:
 			if getattr(policy, "only_on_pressure", False) and not pressure:
 				continue
+			if not pressure:
+				continue
+			if _LAST_CPU_OVER_LIMIT_COUNT < max(1, CPU_CONSECUTIVE_TICKS):
+				continue
 			candidates = [v for v in vmx_list if not active_map.get(v, False)]
-			if RDP_DETECTION_MODE == "hybrid":
-				from .network import has_active_rdp_connections as _thorough
-				rechecked: list[Path] = []
-				for v in candidates:
-					try:
-						if not _thorough(v, RDP_PORT):
-							rechecked.append(v)
-					except Exception:
-						rechecked.append(v)
-				candidates = rechecked
 			per_tick_limit = 1 if pressure else None
 			to_stop = _select_idle_vms_for_stop(candidates, limit=per_tick_limit)
 			for victim in to_stop:
