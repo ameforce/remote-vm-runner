@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 import logging
-from typing import Iterable
 
 from .config import GUEST_PASS, GUEST_USER
 from .vmrun import run_vmrun

@@ -73,7 +73,9 @@ def ensure_guest_credentials_interactive(
         return "ok_env"
 
     if isatty_fn is None:
-        isatty_fn = lambda: bool(os.isatty(0))
+        def _isatty_default() -> bool:
+            return bool(os.isatty(0))
+        isatty_fn = _isatty_default
     if input_fn is None:
         input_fn = input
     if getpass_fn is None:

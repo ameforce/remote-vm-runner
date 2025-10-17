@@ -8,10 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-import psutil
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from time import time as _time
 
 from . import config as default_cfg
 from . import durations
