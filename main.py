@@ -9,11 +9,9 @@ import argparse
 import logging
 import os
 import sys
-import logging
 
 import requests
 import uvicorn
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def _build_log_config() -> dict:
