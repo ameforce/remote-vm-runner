@@ -13,18 +13,13 @@ from .config import (
     RDP_PS_TIMEOUT_SEC,
     RDP_QUSER_TIMEOUT_SEC,
     TCP_PROBE_TIMEOUT_SEC,
-    RDP_CHECK_BUDGET_SEC,
-    GUEST_USER,
-    GUEST_PASS,
     ENABLE_TOOLS_SELF_HEAL,
     TOOLS_RESTART_COOLDOWN_SEC,
 )
-from .guest import run_in_guest, run_in_guest_capture, run_script_in_guest_capture, copy_from_guest
+from .guest import run_in_guest, run_in_guest_capture
 from .vmrun import run_vmrun
 import socket
-import tempfile
 import time
-import os
 import subprocess
 
 

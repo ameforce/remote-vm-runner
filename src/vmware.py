@@ -5,8 +5,7 @@ import subprocess
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Iterable
-import os
+from typing import Callable
 import socket
 import psutil
 import ipaddress
