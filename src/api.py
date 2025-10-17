@@ -41,8 +41,6 @@ from .models import (
     VMListResponse,
 )
 from .network import (
-    has_active_rdp_connections,
-    has_active_rdp_connections_fast,
     has_active_rdp_connections_tcp,
     is_preferred_ip,
     renew_network,
@@ -176,12 +174,11 @@ def create_app(config_module=None) -> FastAPI:
         log = logging.getLogger("src.api")
         policy = IdlePolicy(
             enabled=True,
-            idle_minutes=5,
             check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
             mode=IDLE_SHUTDOWN_MODE,
             only_on_pressure=IDLE_ONLY_ON_PRESSURE,
         )
-        log.info("starting watchdog thread: interval=%ss idle_minutes=%s mode=%s", policy.check_interval_sec, policy.idle_minutes, policy.mode)
+        log.info("starting watchdog thread: interval=%ss mode=%s", policy.check_interval_sec, policy.mode)
         t = threading.Thread(target=_watchdog_loop, args=(policy,), daemon=True)
         t.start()
         yield
@@ -243,7 +240,7 @@ def create_app(config_module=None) -> FastAPI:
     def rdp_active(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
         try:
-            active = bool(has_active_rdp_connections_fast(vmx))
+            active = bool(has_active_rdp_connections_tcp(vmx))
         except Exception:
             active = False
         return {"vm": vm, "active": active}
@@ -252,7 +249,7 @@ def create_app(config_module=None) -> FastAPI:
     def rdp_used(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
         try:
-            active = bool(has_active_rdp_connections_fast(vmx))
+            active = bool(has_active_rdp_connections_tcp(vmx))
         except Exception:
             active = False
         clients: list[str] = []
@@ -408,7 +405,6 @@ def create_app(config_module=None) -> FastAPI:
     def get_idle_policy() -> IdlePolicy:
         return IdlePolicy(
             enabled=True,
-            idle_minutes=5,
             check_interval_sec=IDLE_CHECK_INTERVAL_SEC,
             mode=IDLE_SHUTDOWN_MODE,
             only_on_pressure=IDLE_ONLY_ON_PRESSURE,
