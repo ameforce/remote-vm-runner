@@ -1,0 +1,9 @@
+[project]
+name = "remote-vm-runner"
+version = "1.0.0"
+requires-python = ">=3.10"
+
+dependencies = ["fastapi", "uvicorn", "requests", "pydantic", "pytest", "pytest-cov", "httpx", "psutil", "tqdm"]
+
+
+[tool.uv]
