@@ -26,4 +26,9 @@ def run_vmrun(args: Iterable[str], capture: bool = True, timeout: int = 120) -> 
             pass
         return ""
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"vmrun failed: {exc.stderr.strip()}") from exc
+        err = (exc.stderr or "").strip()
+        out = (exc.stdout or "").strip()
+        msg = err or out or "unknown error"
+        code = getattr(exc, "returncode", None)
+        detail = f"{msg}" if code is None else f"{msg} (code={code})"
+        raise RuntimeError(f"vmrun failed: {detail}") from exc

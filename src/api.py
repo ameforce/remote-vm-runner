@@ -51,6 +51,7 @@ from .vmware import (
     list_snapshots,
     run_vmrun,
     start_vm_async,
+    ensure_vm_running,
     wait_for_tools_ready,
     wait_for_vm_ready,
     wait_for_rdp_ready,
@@ -91,8 +92,7 @@ def _revert_job(vm: str, snap: str, task_id: str) -> None:
             return
         run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
         if not is_vm_running(vmx):
-            task.progress = "전원 켜는 중"
-            start_vm_async(vmx)
+            ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
         try:
             if not SKIP_TOOLS_WAIT_WHEN_HEADLESS:
                 task.progress = "Tools 대기 중"
@@ -134,11 +134,17 @@ def _connect_job(vm: str, task_id: str) -> None:
     try:
         task.status = "running"
         task.started = time.time()
-        task.progress = "IP 획득 중"
+        task.progress = "전원 상태 확인 중"
         vmx = vmx_from_name(vm)
-        was_running = is_vm_running(vmx)
-        if not was_running:
-            start_vm_async(vmx)
+        ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+        was_running = True
+        try:
+            if not SKIP_TOOLS_WAIT_WHEN_HEADLESS:
+                task.progress = "Tools 대기 중"
+                wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+        except Exception:
+            pass
+        task.progress = "IP 획득 중"
         probe, tout = _calc_poll_params(vm, "connect")
         ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
         task.progress = "RDP 준비 대기 중"
@@ -278,8 +284,7 @@ def create_app(config_module=None) -> FastAPI:
         if payload.snapshot not in snaps:
             raise HTTPException(404, f"Snapshot '{payload.snapshot}' not found.")
         run_vmrun(["revertToSnapshot", str(vmx), payload.snapshot], timeout=60)
-        if not is_vm_running(vmx):
-            start_vm_async(vmx)
+        ensure_vm_running(vmx, timeout=60)
         try:
             if not SKIP_TOOLS_WAIT_WHEN_HEADLESS:
                 wait_for_tools_ready(vmx, timeout=60)
@@ -309,9 +314,7 @@ def create_app(config_module=None) -> FastAPI:
                 task.finished = time.time()
                 return
             run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
-            if not is_vm_running(vmx):
-                task.progress = "전원 켜는 중"
-                start_vm_async(vmx)
+            ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
             try:
                 task.progress = "Tools 대기 중"
                 wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
@@ -352,11 +355,17 @@ def create_app(config_module=None) -> FastAPI:
         try:
             task.status = "running"
             task.started = time.time()
-            task.progress = "IP 획득 중"
+            task.progress = "전원 상태 확인 중"
             vmx = _vmx_from_name_local(vm)
-            was_running = is_vm_running(vmx)
-            if not was_running:
-                start_vm_async(vmx)
+            ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+            was_running = True
+            try:
+                if not SKIP_TOOLS_WAIT_WHEN_HEADLESS:
+                    task.progress = "Tools 대기 중"
+                    wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+            except Exception:
+                pass
+            task.progress = "IP 획득 중"
             probe, tout = _calc_poll_params(vm, "connect")
             ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
             task.progress = "RDP 준비 대기 중"

@@ -26,6 +26,14 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
+def _is_vm_running_quick(vmx: Path) -> bool:
+    try:
+        status = run_vmrun(["list"], timeout=6)
+        return str(vmx) in status
+    except Exception:
+        return False
+
+
 _ACTIVE_KEYWORDS = {" active ", "활성", "activo", "attivo", "aktív", "aktief", "active"}
 
 
@@ -70,6 +78,8 @@ _LAST_TOOLS_RESTART: dict[str, float] = {}
 
 
 def _maybe_restart_vmware_tools(vmx: Path) -> None:
+    if not _is_vm_running_quick(vmx):
+        return
     if not ENABLE_TOOLS_SELF_HEAL:
         return
     key = str(vmx)
@@ -139,6 +149,8 @@ def renew_network(vmx: Path, on_progress: Callable[[str], None] | None = None) -
 
 
 def get_active_rdp_remote_ips(vmx: Path, rdp_port: int = RDP_PORT) -> list[str]:
+    if not _is_vm_running_quick(vmx):
+        return []
     try:
         ps_cmd = (
             f"$ips=(Get-NetTCPConnection -LocalPort {rdp_port} -State Established -ErrorAction SilentlyContinue | "
@@ -203,6 +215,8 @@ def get_active_rdp_remote_ips(vmx: Path, rdp_port: int = RDP_PORT) -> list[str]:
 
 
 def get_active_rdp_usernames(vmx: Path) -> list[str]:
+    if not _is_vm_running_quick(vmx):
+        return []
     outputs: list[str] = []
     try:
         out = run_in_guest_capture(vmx, r"C:\\Windows\\System32\\query.exe", "user", timeout=RDP_QUSER_TIMEOUT_SEC)

@@ -9,6 +9,7 @@ from typing import Callable
 import socket
 import psutil
 import ipaddress
+import logging
 
 from .config import (
     GUEST_PASS,
@@ -27,6 +28,47 @@ from .config import (
 )
 from .network import renew_network
 from .vmrun import run_vmrun
+
+
+logger = logging.getLogger(__name__)
+
+def ensure_vm_running(
+    vmx: Path,
+    timeout: int = 60,
+    probe_interval: float = 0.5,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
+    if is_vm_running(vmx):
+        return
+    if on_progress:
+        try:
+            on_progress("전원 켜는 중")
+        except Exception:
+            pass
+    start_vm_async(vmx)
+    start_ts = time.perf_counter()
+    fallback_done = False
+    while True:
+        if is_vm_running(vmx):
+            return
+        elapsed = time.perf_counter() - start_ts
+        if not fallback_done and elapsed > min(timeout * 0.33, 10):
+            try:
+                if on_progress:
+                    on_progress("전원 켜는 중(폴백)")
+            except Exception:
+                pass
+            try:
+                run_vmrun(["start", str(vmx), "nogui"], timeout=60)
+            except Exception as exc:
+                try:
+                    logger.warning("Synchronous start fallback failed: vmx=%s err=%s", vmx, exc)
+                except Exception:
+                    pass
+            fallback_done = True
+        if elapsed > timeout:
+            raise TimeoutError("VM 전원을 켤 수 없습니다(타임아웃)")
+        time.sleep(probe_interval)
 
 
 def run_in_guest(
@@ -108,8 +150,18 @@ def start_vm_async(vmx: Path) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                logger.warning("Popen start failed, falling back to synchronous start: vmx=%s err=%s", vmx, exc)
+            except Exception:
+                pass
+            try:
+                run_vmrun(["start", str(vmx), "nogui"], timeout=60)
+            except Exception as exc2:
+                try:
+                    logger.error("Fallback start failed: vmx=%s err=%s", vmx, exc2)
+                except Exception:
+                    pass
     threading.Thread(target=run_start_command, daemon=True).start()
 
 
