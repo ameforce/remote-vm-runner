@@ -26,7 +26,7 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
-def _is_vm_running_quick(vmx: Path) -> bool:
+def _is_vm_running(vmx: Path) -> bool:
     try:
         status = run_vmrun(["list"], timeout=6)
         return str(vmx) in status
@@ -78,7 +78,7 @@ _LAST_TOOLS_RESTART: dict[str, float] = {}
 
 
 def _maybe_restart_vmware_tools(vmx: Path) -> None:
-    if not _is_vm_running_quick(vmx):
+    if not _is_vm_running(vmx):
         return
     if not ENABLE_TOOLS_SELF_HEAL:
         return
@@ -112,9 +112,11 @@ def _maybe_restart_vmware_tools(vmx: Path) -> None:
 
 
 def has_active_rdp_connections_tcp(vmx: Path, rdp_port: int = RDP_PORT) -> bool:
+    if not _is_vm_running(vmx):
+        return False
     try:
-        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=6)
-        ip = ip_raw.strip()
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx), "-wait"], timeout=6)
+        ip = (ip_raw or "").strip()
         if not ip:
             return False
     except Exception:
@@ -149,7 +151,7 @@ def renew_network(vmx: Path, on_progress: Callable[[str], None] | None = None) -
 
 
 def get_active_rdp_remote_ips(vmx: Path, rdp_port: int = RDP_PORT) -> list[str]:
-    if not _is_vm_running_quick(vmx):
+    if not _is_vm_running(vmx):
         return []
     try:
         ps_cmd = (
@@ -215,7 +217,7 @@ def get_active_rdp_remote_ips(vmx: Path, rdp_port: int = RDP_PORT) -> list[str]:
 
 
 def get_active_rdp_usernames(vmx: Path) -> list[str]:
-    if not _is_vm_running_quick(vmx):
+    if not _is_vm_running(vmx):
         return []
     outputs: list[str] = []
     try:
@@ -247,9 +249,9 @@ def get_active_rdp_usernames(vmx: Path) -> list[str]:
     return usernames
 
 
-def _get_guest_ip_quick(vmx: Path) -> str:
+def _get_guest_ip(vmx: Path) -> str:
     try:
-        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], timeout=3)
+        ip_raw = run_vmrun(["getGuestIPAddress", str(vmx), "-wait"], timeout=3)
         return (ip_raw or "").strip()
     except Exception:
         return ""
@@ -298,5 +300,5 @@ def get_active_rdp_usernames_best(vmx: Path) -> list[str]:
     users = get_active_rdp_usernames(vmx)
     if users:
         return users
-    ip = _get_guest_ip_quick(vmx)
+    ip = _get_guest_ip(vmx)
     return get_active_rdp_usernames_host(ip)

@@ -49,7 +49,6 @@ PREFERRED_SUBNETS = [ipaddress.ip_network(net.strip()) for net in _pref_env.spli
 _ex_env = os.getenv("EXCLUDE_SUBNETS", "")
 EXCLUDE_SUBNETS = [ipaddress.ip_network(net.strip()) for net in _ex_env.split(',') if net.strip()]
 
-ENABLE_IDLE_WATCHDOG: bool = True
 IDLE_CHECK_INTERVAL_SEC: int = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "20"))
 IDLE_SHUTDOWN_MODE: str = os.getenv("IDLE_SHUTDOWN_MODE", "soft")
 IDLE_ONLY_ON_PRESSURE: bool = os.getenv("IDLE_ONLY_ON_PRESSURE", "true").strip().lower() in {"1", "true", "yes"}
@@ -74,20 +73,9 @@ RDP_CHECK_BATCH_SIZE: int = max(0, int(os.getenv("RDP_CHECK_BATCH_SIZE", "0")))
 
 REQUIRE_GUEST_CREDENTIALS: bool = os.getenv("REQUIRE_GUEST_CREDENTIALS", "false").strip().lower() in {"1", "true", "yes"}
 
-SKIP_TOOLS_WAIT_WHEN_HEADLESS: bool = os.getenv("SKIP_TOOLS_WAIT_WHEN_HEADLESS", "true").strip().lower() in {"1", "true", "yes"}
-ENABLE_HEADLESS_IP_FALLBACK: bool = os.getenv("ENABLE_HEADLESS_IP_FALLBACK", "true").strip().lower() in {"1", "true", "yes"}
-
 DHCP_LEASES_PATHS_RAW: str = os.getenv("DHCP_LEASES_PATHS", "").strip()
 
 RDP_READY_WAIT_SEC: float = float(os.getenv("RDP_READY_WAIT_SEC", "45"))
 RDP_READY_PROBE_INTERVAL_SEC: float = float(os.getenv("RDP_READY_PROBE_INTERVAL_SEC", "0.5"))
 
-RDP_STATUS_CACHE_TTL_SEC: int = int(os.getenv("RDP_STATUS_CACHE_TTL_SEC", "30"))
-RDP_CLIENTS_CACHE_TTL_SEC: int = int(os.getenv("RDP_CLIENTS_CACHE_TTL_SEC", "30"))
-RDP_ACTIVE_SCAN_MAX_WORKERS: int = max(1, int(os.getenv("RDP_ACTIVE_SCAN_MAX_WORKERS", "4")))
-RDP_CLIENTS_SCAN_MAX_WORKERS: int = max(1, int(os.getenv("RDP_CLIENTS_SCAN_MAX_WORKERS", "2")))
-RDP_HINT_MAX_WORKERS: int = max(1, int(os.getenv("RDP_HINT_MAX_WORKERS", "8")))
 
-RDP_MONITOR_ENABLED: bool = os.getenv("RDP_MONITOR_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
-RDP_MONITOR_INTERVAL_SEC: int = int(os.getenv("RDP_MONITOR_INTERVAL_SEC", "20"))
-RDP_MONITOR_MAX_WORKERS: int = max(1, int(os.getenv("RDP_MONITOR_MAX_WORKERS", "2")))
