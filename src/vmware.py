@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Callable
 import socket
 import psutil
-import ipaddress
+import logging
+import shutil
 
 from .config import (
     GUEST_PASS,
@@ -16,17 +17,75 @@ from .config import (
     IP_POLL_INTERVAL,
     IP_POLL_TIMEOUT,
     VMRUN,
-    ENABLE_HEADLESS_IP_FALLBACK,
-    SKIP_TOOLS_WAIT_WHEN_HEADLESS,
     DHCP_LEASES_PATHS_RAW,
-    PREFERRED_SUBNETS,
-    EXCLUDE_SUBNETS,
     RDP_PORT,
     RDP_READY_WAIT_SEC,
     RDP_READY_PROBE_INTERVAL_SEC,
 )
-from .network import renew_network
+from .network import renew_network, is_preferred_ip
 from .vmrun import run_vmrun
+
+
+logger = logging.getLogger(__name__)
+
+def ensure_vm_running(
+    vmx: Path,
+    timeout: int = 60,
+    probe_interval: float = 0.5,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
+    if is_vm_running(vmx):
+        return
+    if on_progress:
+        try:
+            on_progress("전원 켜는 중")
+        except Exception:
+            pass
+    try:
+        logger.info("VM is powered off; starting: vmx=%s", vmx)
+    except Exception:
+        pass
+    start_vm_async(vmx)
+    start_ts = time.perf_counter()
+    fallback_done = False
+    while True:
+        if is_vm_running(vmx):
+            try:
+                logger.info("VM power on confirmed: vmx=%s elapsed=%.2fs", vmx, time.perf_counter() - start_ts)
+            except Exception:
+                pass
+            return
+        elapsed = time.perf_counter() - start_ts
+        if not fallback_done and elapsed > min(timeout * 0.33, 10):
+            try:
+                if on_progress:
+                    on_progress("전원 켜는 중(폴백)")
+            except Exception:
+                pass
+            try:
+                run_vmrun(["start", str(vmx), "nogui"], timeout=60)
+            except Exception as exc:
+                try:
+                    logger.warning("Synchronous start fallback failed: vmx=%s err=%s", vmx, exc)
+                except Exception:
+                    pass
+                msg = (str(exc) or "").lower()
+                if "already in use" in msg and not is_vm_running(vmx) and not _has_vm_process(vmx):
+                    try:
+                        _try_clear_stale_locks(vmx)
+                    except Exception:
+                        pass
+                    try:
+                        run_vmrun(["start", str(vmx), "nogui"], timeout=60)
+                    except Exception as exc2:
+                        try:
+                            logger.error("Start after lock cleanup failed: vmx=%s err=%s", vmx, exc2)
+                        except Exception:
+                            pass
+            fallback_done = True
+        if elapsed > timeout:
+            raise TimeoutError("VM 전원을 켤 수 없습니다(타임아웃)")
+        time.sleep(probe_interval)
 
 
 def run_in_guest(
@@ -49,9 +108,18 @@ def run_in_guest(
     ]
     if success_codes is None:
         success_codes = {0}
+    t0 = time.perf_counter()
+    try:
+        logger.info("Guest command begin: vmx=%s program=%s args=%s timeout=%ss", vmx, program, " ".join(args), timeout)
+    except Exception:
+        pass
     for attempt in range(1, retries + 1):
         try:
             run_vmrun(cmd_base, capture=True, timeout=timeout)
+            try:
+                logger.info("Guest command success: vmx=%s program=%s elapsed=%.2fs attempt=%d/%d", vmx, program, time.perf_counter() - t0, attempt, retries)
+            except Exception:
+                pass
             return
         except RuntimeError as exc:
             msg = str(exc)
@@ -59,8 +127,16 @@ def run_in_guest(
             if m:
                 exit_code = int(m.group(1))
                 if exit_code in success_codes:
+                    try:
+                        logger.info("Guest command success (accepted code %s): vmx=%s program=%s elapsed=%.2fs attempt=%d/%d", exit_code, vmx, program, time.perf_counter() - t0, attempt, retries)
+                    except Exception:
+                        pass
                     return
             if attempt == retries:
+                try:
+                    logger.warning("Guest command failed: vmx=%s program=%s err=%s elapsed=%.2fs attempts=%d", vmx, program, exc, time.perf_counter() - t0, attempt)
+                except Exception:
+                    pass
                 return
             time.sleep(2)
 
@@ -81,9 +157,23 @@ def run_in_guest_capture(
         program,
         *args,
     ]
+    t0 = time.perf_counter()
     try:
-        return run_vmrun(cmd_base, capture=True, timeout=timeout)
+        logger.info("Guest capture begin: vmx=%s program=%s args=%s timeout=%ss", vmx, program, " ".join(args), timeout)
     except Exception:
+        pass
+    try:
+        out = run_vmrun(cmd_base, capture=True, timeout=timeout)
+        try:
+            logger.info("Guest capture success: vmx=%s program=%s elapsed=%.2fs bytes=%d", vmx, program, time.perf_counter() - t0, len(out or ""))
+        except Exception:
+            pass
+        return out
+    except Exception:
+        try:
+            logger.warning("Guest capture failed: vmx=%s program=%s elapsed=%.2fs", vmx, program, time.perf_counter() - t0)
+        except Exception:
+            pass
         return ""
 
 
@@ -108,8 +198,18 @@ def start_vm_async(vmx: Path) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                logger.warning("Popen start failed, falling back to synchronous start: vmx=%s err=%s", vmx, exc)
+            except Exception:
+                pass
+            try:
+                run_vmrun(["start", str(vmx), "nogui"], timeout=60)
+            except Exception as exc2:
+                try:
+                    logger.error("Fallback start failed: vmx=%s err=%s", vmx, exc2)
+                except Exception:
+                    pass
     threading.Thread(target=run_start_command, daemon=True).start()
 
 
@@ -125,10 +225,6 @@ def wait_for_tools_ready(
     vmx: Path, timeout: int = 60, probe_interval: float = 0.1, on_progress: Callable[[str], None] | None = None
 ) -> None:
     start = time.perf_counter()
-    if SKIP_TOOLS_WAIT_WHEN_HEADLESS and _is_headless():
-        if on_progress:
-            on_progress("헤드리스 감지 – Tools 대기 건너뜀")
-        return
     while True:
         if tools_ready(vmx):
             if on_progress:
@@ -147,11 +243,13 @@ def fast_wait_for_ip(
 ) -> str:
     start_time = time.perf_counter()
     last_ip = ""
+    headless_last = 0.0
+    guest_last = 0.0
     while True:
         if int(time.perf_counter() - start_time) > timeout:
             raise TimeoutError("fast_wait_for_ip: 시간 초과")
         try:
-            raw = run_vmrun(["getGuestIPAddress", str(vmx)], capture=True, timeout=10)
+            raw = run_vmrun(["getGuestIPAddress", str(vmx), "-wait"], capture=True, timeout=10)
             ip = raw.strip()
             if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
                 if on_progress and ip != last_ip:
@@ -160,13 +258,23 @@ def fast_wait_for_ip(
                 return ip
         except Exception:
             pass
-        if ENABLE_HEADLESS_IP_FALLBACK and _is_headless():
+        now = time.perf_counter()
+        if now - headless_last >= 1.0 or not last_ip:
+            headless_last = now
             ip2 = _headless_lookup_ip(vmx)
             if ip2:
                 if on_progress and ip2 != last_ip:
                     on_progress(f"헤드리스: DHCP/ARP에서 IP 확인: {ip2}")
                     last_ip = ip2
                 return ip2
+        if now - guest_last >= 1.0:
+            guest_last = now
+            ip3 = _guest_query_ipv4(vmx)
+            if ip3:
+                if on_progress and ip3 != last_ip:
+                    on_progress(f"게스트 내부에서 IP 확인: {ip3}")
+                    last_ip = ip3
+                return ip3
         time.sleep(probe_interval)
 
 
@@ -190,33 +298,40 @@ def wait_for_vm_ready(
 
     start_time = time.perf_counter()
     last_ip = ""
+    headless_last = 0.0
+    guest_last = 0.0
     while True:
         if int(time.perf_counter() - start_time) > timeout:
             raise TimeoutError(f"{timeout}초 내에 유효한 IP를 확인하지 못했습니다")
         try:
-            ip_raw = run_vmrun(["getGuestIPAddress", str(vmx)], capture=True, timeout=10)
+            ip_raw = run_vmrun(["getGuestIPAddress", str(vmx), "-wait"], capture=True, timeout=10)
             ip = ip_raw.strip()
             if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
                 if on_progress and ip != last_ip:
                     on_progress(f"IP 취득 중: {ip}")
                     last_ip = ip
-                if not _ping_ok(ip):
-                    if on_progress:
-                        on_progress("핑 응답 없음 – 네트워크 재협상")
-                    renew_network(vmx, on_progress=on_progress)
-                    continue
                 if on_progress:
                     on_progress("IP 검증 완료!")
                 return ip
         except Exception:
             pass
-        if ENABLE_HEADLESS_IP_FALLBACK and _is_headless():
+        now = time.perf_counter()
+        if now - headless_last >= 1.0 or not last_ip:
+            headless_last = now
             ip2 = _headless_lookup_ip(vmx)
             if ip2:
                 if on_progress and ip2 != last_ip:
                     on_progress(f"헤드리스: DHCP/ARP에서 IP 확인: {ip2}")
                     last_ip = ip2
                 return ip2
+        if now - guest_last >= 1.0:
+            guest_last = now
+            ip3 = _guest_query_ipv4(vmx)
+            if ip3:
+                if on_progress and ip3 != last_ip:
+                    on_progress(f"게스트 내부에서 IP 확인: {ip3}")
+                    last_ip = ip3
+                return ip3
         time.sleep(probe_interval)
 
 
@@ -253,17 +368,6 @@ def wait_for_rdp_ready(
         if on_progress:
             on_progress("RDP 대기 중…")
         time.sleep(interval)
-
-
-def _is_headless() -> bool:
-    try:
-        for proc in psutil.process_iter(["name"]):
-            name = (proc.info.get("name") or "").lower()
-            if name == "vmware.exe":
-                return False
-    except Exception:
-        return False
-    return True
 
 
 def _normalize_mac_colon(mac: str) -> str:
@@ -358,27 +462,75 @@ def _arp_lookup_ip(mac: str) -> str:
     return ""
 
 
-def _is_preferred_ip(ip_str: str) -> bool:
-    try:
-        ip_obj = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    if any(ip_obj in net for net in EXCLUDE_SUBNETS):
-        return False
-    if not PREFERRED_SUBNETS:
-        return True
-    return any(ip_obj in net for net in PREFERRED_SUBNETS)
-
-
 def _headless_lookup_ip(vmx: Path) -> str:
     mac = _vmx_primary_mac(vmx)
     if not mac:
         return ""
     ip = _parse_dhcp_leases_for_mac(_dhcp_candidate_paths(), mac)
-    if ip and _is_preferred_ip(ip):
+    if ip and is_preferred_ip(ip):
         return ip
     if not ip:
         ip = _arp_lookup_ip(mac)
-    if ip and _is_preferred_ip(ip):
+    if ip and is_preferred_ip(ip):
         return ip
     return ip or ""
+
+
+def _guest_query_ipv4(vmx: Path) -> str:
+    ps = (
+        "$ips=(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.IPAddress -and $_.IPAddress -notmatch '^169\\.254\\.' } | "
+        "Select-Object -ExpandProperty IPAddress | Sort-Object -Unique); "
+        "if($ips){ $ips -join '\\n' }"
+    )
+    out = run_in_guest_capture(
+        vmx,
+        r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "-NoProfile",
+        "-Command",
+        ps,
+        timeout=15,
+    )
+    if not out:
+        return ""
+    for raw in out.splitlines():
+        ip = raw.strip()
+        if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip) and is_preferred_ip(ip):
+            return ip
+    for raw in out.splitlines():
+        ip = raw.strip()
+        if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+            return ip
+    return ""
+def _has_vm_process(vmx: Path) -> bool:
+    vmx_str = str(vmx).lower()
+    stem = vmx.stem.lower()
+    try:
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            name = (proc.info.get("name") or "").lower()
+            if not name.startswith("vmware-vmx"):
+                continue
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            if vmx_str in cmdline or stem in cmdline:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _try_clear_stale_locks(vmx: Path) -> bool:
+    vm_dir = vmx.parent
+    removed_any = False
+    try:
+        for p in vm_dir.glob("*.lck"):
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+                removed_any = True
+            except Exception:
+                pass
+    except Exception:
+        return removed_any
+    return removed_any
