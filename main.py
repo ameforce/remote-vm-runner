@@ -24,6 +24,12 @@ def _build_log_config() -> dict:
     except Exception:
         pass
     try:
+        if "formatters" in config and "access" in config["formatters"]:
+            config["formatters"]["access"]["fmt"] = "[%(asctime)s] %(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s"
+            config["formatters"]["access"]["datefmt"] = datefmt
+    except Exception:
+        pass
+    try:
         if "handlers" in config:
             if "default" in config["handlers"]:
                 config["handlers"]["default"]["level"] = "DEBUG"
@@ -49,6 +55,11 @@ def _build_log_config() -> dict:
                 "level": "DEBUG",
                 "propagate": False,
             },
+            "uvicorn.access": {
+                "handlers": ["access"],
+                "level": "DEBUG",
+                "propagate": False,
+            },
             "src": {
                 "handlers": ["default"],
                 "level": "DEBUG",
@@ -65,6 +76,16 @@ def _build_log_config() -> dict:
                 "propagate": False,
             },
             "src.idle": {
+                "handlers": ["default"],
+                "level": "DEBUG",
+                "propagate": False,
+            },
+            "src.vmware": {
+                "handlers": ["default"],
+                "level": "DEBUG",
+                "propagate": False,
+            },
+            "src.vmrun": {
                 "handlers": ["default"],
                 "level": "DEBUG",
                 "propagate": False,
