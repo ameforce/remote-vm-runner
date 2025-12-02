@@ -64,8 +64,15 @@ class VMClient:
         data = resp.json()
         active = bool(data.get("active"))
         clients = list(data.get("clients") or [])
-        _LOG.debug("rdp_used vm=%s active=%s clients=%d", vm_name, active, len(clients))
-        return active, clients
+        status = str(data.get("status") or ("active" if active else "none"))
+        _LOG.debug(
+            "rdp_used vm=%s active=%s status=%s clients=%d",
+            vm_name,
+            active,
+            status,
+            len(clients),
+        )
+        return active, clients, status
 
     def get_vm_list(self) -> List[str]:
         resp = requests.get(f"{self.api_base}/vms", params={"include_active": "false"}, timeout=10)

@@ -12,8 +12,6 @@ import logging
 import shutil
 
 from .config import (
-    GUEST_PASS,
-    GUEST_USER,
     IP_POLL_INTERVAL,
     IP_POLL_TIMEOUT,
     VMRUN,
@@ -22,7 +20,8 @@ from .config import (
     RDP_READY_WAIT_SEC,
     RDP_READY_PROBE_INTERVAL_SEC,
 )
-from .network import renew_network, is_preferred_ip
+from .guest import run_in_guest_capture
+from .network import is_preferred_ip
 from .vmrun import run_vmrun
 
 
@@ -86,95 +85,6 @@ def ensure_vm_running(
         if elapsed > timeout:
             raise TimeoutError("VM 전원을 켤 수 없습니다(타임아웃)")
         time.sleep(probe_interval)
-
-
-def run_in_guest(
-    vmx: Path,
-    program: str,
-    *args: str,
-    timeout: int = 60,
-    retries: int = 3,
-    success_codes: set[int] | None = None,
-) -> None:
-    cmd_base = [
-        "-gu",
-        GUEST_USER,
-        "-gp",
-        GUEST_PASS,
-        "runProgramInGuest",
-        str(vmx),
-        program,
-        *args,
-    ]
-    if success_codes is None:
-        success_codes = {0}
-    t0 = time.perf_counter()
-    try:
-        logger.info("Guest command begin: vmx=%s program=%s args=%s timeout=%ss", vmx, program, " ".join(args), timeout)
-    except Exception:
-        pass
-    for attempt in range(1, retries + 1):
-        try:
-            run_vmrun(cmd_base, capture=True, timeout=timeout)
-            try:
-                logger.info("Guest command success: vmx=%s program=%s elapsed=%.2fs attempt=%d/%d", vmx, program, time.perf_counter() - t0, attempt, retries)
-            except Exception:
-                pass
-            return
-        except RuntimeError as exc:
-            msg = str(exc)
-            m = re.search(r"exit code:\s*(\d+)", msg)
-            if m:
-                exit_code = int(m.group(1))
-                if exit_code in success_codes:
-                    try:
-                        logger.info("Guest command success (accepted code %s): vmx=%s program=%s elapsed=%.2fs attempt=%d/%d", exit_code, vmx, program, time.perf_counter() - t0, attempt, retries)
-                    except Exception:
-                        pass
-                    return
-            if attempt == retries:
-                try:
-                    logger.warning("Guest command failed: vmx=%s program=%s err=%s elapsed=%.2fs attempts=%d", vmx, program, exc, time.perf_counter() - t0, attempt)
-                except Exception:
-                    pass
-                return
-            time.sleep(2)
-
-
-def run_in_guest_capture(
-    vmx: Path,
-    program: str,
-    *args: str,
-    timeout: int = 30,
-) -> str:
-    cmd_base = [
-        "-gu",
-        GUEST_USER,
-        "-gp",
-        GUEST_PASS,
-        "runProgramInGuest",
-        str(vmx),
-        program,
-        *args,
-    ]
-    t0 = time.perf_counter()
-    try:
-        logger.info("Guest capture begin: vmx=%s program=%s args=%s timeout=%ss", vmx, program, " ".join(args), timeout)
-    except Exception:
-        pass
-    try:
-        out = run_vmrun(cmd_base, capture=True, timeout=timeout)
-        try:
-            logger.info("Guest capture success: vmx=%s program=%s elapsed=%.2fs bytes=%d", vmx, program, time.perf_counter() - t0, len(out or ""))
-        except Exception:
-            pass
-        return out
-    except Exception:
-        try:
-            logger.warning("Guest capture failed: vmx=%s program=%s elapsed=%.2fs", vmx, program, time.perf_counter() - t0)
-        except Exception:
-            pass
-        return ""
 
 
 def is_vm_running(vmx: Path) -> bool:

@@ -128,7 +128,7 @@ def watchdog_tick(policy: IdlePolicy) -> None:
 			vmx_targets = vmx_list[: RDP_CHECK_BATCH_SIZE]
 		else:
 			vmx_targets = vmx_list
-		from .network import has_active_rdp_connections_tcp as _tcp
+		from .rdp_probe import has_active_rdp_connections_tcp as _tcp
 		checker = _tcp
 
 		if checker is not None:

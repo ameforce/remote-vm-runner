@@ -20,4 +20,3 @@ uv run python "%_SCRIPT_DIR%\main.py" client
 
 popd > nul
 echo.
-pause

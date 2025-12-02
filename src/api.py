@@ -38,33 +38,15 @@ from .models import (
     VMListItem,
     VMListResponse,
 )
-from .network import (
-    has_active_rdp_connections_tcp,
-    is_preferred_ip,
-    renew_network,
+from .network import is_preferred_ip, renew_network
+from .rdp_probe import (
     get_active_rdp_remote_ips,
     get_active_rdp_usernames,
     get_active_rdp_usernames_best,
+    has_active_rdp_connections_tcp,
+    probe_rdp_usage,
 )
-from .vmware import (
-    fast_wait_for_ip,
-    is_vm_running,
-    list_snapshots,
-    run_vmrun,
-    ensure_vm_running,
-    wait_for_tools_ready,
-    wait_for_vm_ready,
-    wait_for_rdp_ready,
-)
-
-
-def vmx_from_name(name: str) -> Path:
-    if name in VM_MAP:
-        return VM_MAP[name]
-    vmx = find_vmx_for_name(name, VM_ROOT)
-    if vmx is not None:
-        return vmx
-    raise HTTPException(404, detail=f"Unknown VM '{name}'")
+from .vmware import fast_wait_for_ip, is_vm_running, list_snapshots, run_vmrun, ensure_vm_running, wait_for_vm_ready, wait_for_rdp_ready, tools_ready
 
 
 def _calc_poll_params(vm: str, op: str) -> tuple[float, int]:
@@ -124,8 +106,10 @@ def _run_revert_pipeline(
     run_vmrun(["revertToSnapshot", str(vmx), snapshot], timeout=60)
     ensure_vm_running(vmx, timeout=60, on_progress=progress_cb)
     try:
-        _safe_progress(progress, "Tools 대기 중")
-        wait_for_tools_ready(vmx, timeout=60, on_progress=progress_cb)
+        _safe_progress(progress, "Tools 상태 단일 확인")
+        time.sleep(3.0)
+        if tools_ready(vmx):
+            _safe_progress(progress, "VMware Tools 준비 완료(단일 체크)")
     except Exception:
         pass
     _safe_progress(progress, "IP 획득 중")
@@ -180,8 +164,10 @@ def _run_connect_pipeline(
     _safe_progress(progress, "전원 상태 확인 중")
     ensure_vm_running(vmx, timeout=60, on_progress=progress_cb)
     try:
-        _safe_progress(progress, "Tools 대기 중")
-        wait_for_tools_ready(vmx, timeout=60, on_progress=progress_cb)
+        _safe_progress(progress, "Tools 상태 단일 확인")
+        time.sleep(3.0)
+        if tools_ready(vmx):
+            _safe_progress(progress, "VMware Tools 준비 완료(단일 체크)")
     except Exception:
         pass
     _safe_progress(progress, "IP 획득 중")
@@ -283,25 +269,36 @@ def create_app(config_module=None) -> FastAPI:
     def rdp_active(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
         try:
-            active = bool(has_active_rdp_connections_tcp(vmx))
+            if not is_vm_running(vmx):
+                return {"vm": vm, "active": False, "status": "none"}
+            active, _clients, status = probe_rdp_usage(vmx)
         except Exception:
             active = False
-        return {"vm": vm, "active": active}
+            status = "error"
+        return {"vm": vm, "active": bool(active), "status": status}
 
     @app.get("/rdp_used")
     def rdp_used(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
         try:
-            active = bool(has_active_rdp_connections_tcp(vmx))
+            if not is_vm_running(vmx):
+                return {
+                    "vm": vm,
+                    "active": False,
+                    "clients": [],
+                    "status": "none",
+                }
+            active, clients, status = probe_rdp_usage(vmx)
         except Exception:
             active = False
-        clients: list[str] = []
-        if active:
-            try:
-                clients = get_active_rdp_usernames_best(vmx)
-            except Exception:
-                clients = []
-        return {"vm": vm, "active": active, "clients": clients}
+            clients = []
+            status = "error"
+        return {
+            "vm": vm,
+            "active": bool(active),
+            "clients": clients,
+            "status": status,
+        }
 
 
     @app.get("/vm_state")
