@@ -127,14 +127,6 @@ def ensure_remote_api_env_interactive(
             except Exception:
                 return False
         isatty_fn = _stdin_isatty
-    if isatty_fn is None:
-        import sys as _sys
-        def _stdin_isatty() -> bool:
-            try:
-                return bool(getattr(_sys, "stdin", None) and _sys.stdin.isatty())
-            except Exception:
-                return False
-        isatty_fn = _stdin_isatty
     if input_fn is None:
         input_fn = input
 

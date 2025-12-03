@@ -59,7 +59,7 @@ RDP_QUSER_TIMEOUT_SEC: int = int(os.getenv("RDP_QUSER_TIMEOUT_SEC", "6"))
 
 TCP_PROBE_TIMEOUT_SEC: float = float(os.getenv("TCP_PROBE_TIMEOUT_SEC", "1.0"))
 
-ENABLE_TOOLS_SELF_HEAL: bool = os.getenv("ENABLE_TOOLS_SELF_HEAL", "true").strip().lower() in {"1", "true", "yes"}
+ENABLE_TOOLS_SELF_HEAL: bool = os.getenv("ENABLE_TOOLS_SELF_HEAL", "false").strip().lower() in {"1", "true", "yes"}
 TOOLS_RESTART_COOLDOWN_SEC: int = int(os.getenv("TOOLS_RESTART_COOLDOWN_SEC", "600"))
 
 MIN_AVAILABLE_MEM_GB: float = float(os.getenv("MIN_AVAILABLE_MEM_GB", "4"))
