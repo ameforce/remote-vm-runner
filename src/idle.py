@@ -67,16 +67,17 @@ def _is_pressure_high() -> tuple[bool, float, float]:
 	cpu_pct = metrics.get_host_cpu_percent()
 	mem_pressure = avail < MIN_AVAILABLE_MEM_GB
 	cpu_pct_for_logic = round(float(cpu_pct), 1)
-	if cpu_pct_for_logic >= CPU_PRESSURE_THRESHOLD_PCT:
+	instant_cpu_pressure = cpu_pct_for_logic >= CPU_PRESSURE_THRESHOLD_PCT
+	instant_pressure = bool(mem_pressure or instant_cpu_pressure)
+	if instant_pressure:
 		_CPU_OVER_LIMIT_COUNT += 1
 	else:
 		_CPU_OVER_LIMIT_COUNT = 0
-	cpu_pressure = _CPU_OVER_LIMIT_COUNT >= max(1, CPU_CONSECUTIVE_TICKS)
 	global _LAST_CPU_OVER_LIMIT_COUNT, _LAST_MEM_PRESSURE, _LAST_CPU_PRESSURE
 	_LAST_CPU_OVER_LIMIT_COUNT = _CPU_OVER_LIMIT_COUNT
 	_LAST_MEM_PRESSURE = bool(mem_pressure)
-	_LAST_CPU_PRESSURE = bool(cpu_pressure)
-	return ((mem_pressure or cpu_pressure), avail, cpu_pct_for_logic)
+	_LAST_CPU_PRESSURE = bool(instant_cpu_pressure)
+	return (instant_pressure, avail, cpu_pct_for_logic)
 
 
 def _shutdown_vm(vmx: Path, mode: str = "soft") -> None:
