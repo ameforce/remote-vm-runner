@@ -168,18 +168,29 @@ def run_client() -> int:
         for fut in as_completed(future_to_idx):
             i, nm = future_to_idx[fut]
             try:
-                active, clients = fut.result()
+                active, clients, status = fut.result()
             except Exception:
                 labels[i - 1] = f"{nm}  (사용자: 확인 에러 발생)"
                 active_flags[nm] = None
                 _render_all()
                 continue
-            log.debug("rdp_used result: vm=%s active=%s clients=%s", nm, active, clients)
-            active_flags[nm] = bool(active)
-            if active_flags[nm]:
+            log.debug("rdp_used result: vm=%s active=%s status=%s clients=%s", nm, active, status, clients)
+            s = (status or "").strip().lower()
+            if s == "tools_restarting":
+                labels[i - 1] = f"{nm}  (사용자: vmtools 복구 중)"
+                active_flags[nm] = None
+            elif s == "tools_error":
+                labels[i - 1] = f"{nm}  (사용자: 알 수 없음 - vmtools 에러)"
+                active_flags[nm] = None
+            elif s == "active":
+                active_flags[nm] = True
                 labels[i - 1] = f"{nm}  (사용자: 있음)"
-            else:
+            elif s == "none":
+                active_flags[nm] = False
                 labels[i - 1] = f"{nm}  (사용자: 없음)"
+            else:
+                labels[i - 1] = f"{nm}  (사용자: 확인 에러 발생)"
+                active_flags[nm] = None
             _render_all()
 
     print()

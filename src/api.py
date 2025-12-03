@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
@@ -19,6 +20,7 @@ from .config import (
     IP_POLL_INTERVAL,
     IP_POLL_TIMEOUT,
     REQUIRE_GUEST_CREDENTIALS,
+    RDP_PORT,
     VM_MAP,
     VM_ROOT,
 )
@@ -36,34 +38,15 @@ from .models import (
     VMListItem,
     VMListResponse,
 )
-from .network import (
-    has_active_rdp_connections_tcp,
-    is_preferred_ip,
-    renew_network,
+from .network import is_preferred_ip, renew_network
+from .rdp_probe import (
     get_active_rdp_remote_ips,
     get_active_rdp_usernames,
     get_active_rdp_usernames_best,
+    has_active_rdp_connections_tcp,
+    probe_rdp_usage,
 )
-from .vmware import (
-    fast_wait_for_ip,
-    is_vm_running,
-    list_snapshots,
-    run_vmrun,
-    start_vm_async,
-    ensure_vm_running,
-    wait_for_tools_ready,
-    wait_for_vm_ready,
-    wait_for_rdp_ready,
-)
-
-
-def vmx_from_name(name: str) -> Path:
-    if name in VM_MAP:
-        return VM_MAP[name]
-    vmx = find_vmx_for_name(name, VM_ROOT)
-    if vmx is not None:
-        return vmx
-    raise HTTPException(404, detail=f"Unknown VM '{name}'")
+from .vmware import fast_wait_for_ip, is_vm_running, list_snapshots, run_vmrun, ensure_vm_running, wait_for_vm_ready, wait_for_rdp_ready, tools_ready
 
 
 def _calc_poll_params(vm: str, op: str) -> tuple[float, int]:
@@ -73,97 +56,143 @@ def _calc_poll_params(vm: str, op: str) -> tuple[float, int]:
 TASKS: dict[str, TaskInfo] = {}
 
 
-def _revert_job(vm: str, snap: str, task_id: str) -> None:
-    task = TASKS[task_id]
+ProgressCallback = Callable[[str], None] | None
+
+
+def _safe_progress(cb: ProgressCallback, message: str) -> None:
+    if not cb or not message:
+        return
     try:
-        task.status = "running"
-        task.started = time.time()
-        task.progress = "스냅샷 복구 중"
-        vmx = vmx_from_name(vm)
-        try:
-            active_clients = get_active_rdp_remote_ips(vmx)
-        except Exception:
-            active_clients = []
-        if active_clients:
-            task.status = "failed"
-            task.error = f"Active RDP clients detected ({', '.join(active_clients)}); revert is blocked."
-            task.finished = time.time()
+        cb(message)
+    except Exception:
+        pass
+
+
+def _progress_adapter(cb: ProgressCallback) -> Callable[[str], None]:
+    def _inner(message: str) -> None:
+        _safe_progress(cb, message)
+
+    return _inner
+
+
+def _task_progress_writer(task: TaskInfo) -> Callable[[str], None]:
+    def _update(message: str) -> None:
+        if not message:
             return
-        run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
-        if not is_vm_running(vmx):
-            ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
         try:
-            task.progress = "Tools 대기 중"
-            wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
+            task.progress = message
         except Exception:
             pass
-        task.progress = "IP 획득 중"
-        probe, tout = _calc_poll_params(vm, "revert")
-        ip = fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-        task.progress = f"IP(1차)={ip} – 네트워크 재협상 중"
-        renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-        task.progress = "IP 재확인(2차)"
-        ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-        task.progress = "RDP 준비 대기 중"
-        if not wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m)):
-            task.progress = "RDP 대기 초과 – 네트워크 재협상"
-            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-            task.progress = "RDP 재대기"
-            wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m))
-        try:
-            socket.create_connection((ip, 3389), timeout=3).close()
-        except Exception:
-            task.progress = "RDP 대기 초과 – 네트워크 재협상"
-            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-            ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-        task.ip = ip
-        task.status = "done"
-        task.progress = "완료"
-        task.finished = time.time()
-        durations.record_duration(f"{vm}_revert", task.finished - task.started)
-    except Exception as exc:
-        task.status = "failed"
-        task.error = str(exc)
-        task.finished = time.time()
+
+    return _update
 
 
-def _connect_job(vm: str, task_id: str) -> None:
-    task = TASKS[task_id]
+def _active_rdp_clients(vmx: Path) -> list[str]:
     try:
-        task.status = "running"
-        task.started = time.time()
-        task.progress = "전원 상태 확인 중"
-        vmx = vmx_from_name(vm)
-        ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
-        was_running = True
-        try:
-            task.progress = "Tools 대기 중"
-            wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
-        except Exception:
-            pass
-        task.progress = "IP 획득 중"
-        probe, tout = _calc_poll_params(vm, "connect")
-        ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-        task.progress = "RDP 준비 대기 중"
-        if not wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m)):
-            task.progress = "RDP 대기 초과 – 네트워크 재협상"
-            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-            task.progress = "RDP 재대기"
-            wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m))
-        if not is_preferred_ip(ip):
-            task.progress = "예상치 않은 IP – 네트워크 재협상"
-            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-            ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-        task.ip = ip
-        task.status = "done"
-        task.progress = "완료"
-        task.finished = time.time()
-        key = f"{vm}_connect_warm" if was_running else f"{vm}_connect_cold"
-        durations.record_duration(key, task.finished - task.started)
-    except Exception as exc:
-        task.status = "failed"
-        task.error = str(exc)
-        task.finished = time.time()
+        return get_active_rdp_remote_ips(vmx)
+    except Exception:
+        return []
+
+
+def _run_revert_pipeline(
+    vmx: Path,
+    _vm: str,
+    snapshot: str,
+    probe_interval: float,
+    timeout: int,
+    progress: ProgressCallback,
+) -> str:
+    progress_cb = _progress_adapter(progress)
+    run_vmrun(["revertToSnapshot", str(vmx), snapshot], timeout=60)
+    ensure_vm_running(vmx, timeout=60, on_progress=progress_cb)
+    try:
+        _safe_progress(progress, "Tools 상태 단일 확인")
+        time.sleep(3.0)
+        if tools_ready(vmx):
+            _safe_progress(progress, "VMware Tools 준비 완료(단일 체크)")
+    except Exception:
+        pass
+    _safe_progress(progress, "IP 획득 중")
+    fast_ip = fast_wait_for_ip(
+        vmx,
+        timeout=timeout,
+        probe_interval=probe_interval,
+        on_progress=progress_cb,
+    )
+    _safe_progress(progress, f"IP(1차)={fast_ip} – 네트워크 재협상 중")
+    renew_network(vmx, on_progress=progress_cb)
+    _safe_progress(progress, "IP 재확인(2차)")
+    ip = wait_for_vm_ready(
+        vmx,
+        timeout=timeout,
+        probe_interval=probe_interval,
+        on_progress=progress_cb,
+    )
+    _safe_progress(progress, "RDP 준비 대기 중")
+    if not wait_for_rdp_ready(vmx, ip, on_progress=progress_cb):
+        _safe_progress(progress, "RDP 대기 초과 – 네트워크 재협상")
+        renew_network(vmx, on_progress=progress_cb)
+        _safe_progress(progress, "RDP 재대기")
+        wait_for_rdp_ready(vmx, ip, on_progress=progress_cb)
+    try:
+        socket.create_connection((ip, RDP_PORT), timeout=3).close()
+    except Exception:
+        _safe_progress(progress, "RDP 대기 초과 – 네트워크 재협상")
+        renew_network(vmx, on_progress=progress_cb)
+        _safe_progress(progress, "IP 재확인(2차)")
+        ip = wait_for_vm_ready(
+            vmx,
+            timeout=timeout,
+            probe_interval=probe_interval,
+            on_progress=progress_cb,
+        )
+    return ip
+
+
+def _run_connect_pipeline(
+    vmx: Path,
+    _vm: str,
+    probe_interval: float,
+    timeout: int,
+    progress: ProgressCallback,
+) -> tuple[str, bool]:
+    progress_cb = _progress_adapter(progress)
+    try:
+        initial_running = bool(is_vm_running(vmx))
+    except Exception:
+        initial_running = False
+    _safe_progress(progress, "전원 상태 확인 중")
+    ensure_vm_running(vmx, timeout=60, on_progress=progress_cb)
+    try:
+        _safe_progress(progress, "Tools 상태 단일 확인")
+        time.sleep(3.0)
+        if tools_ready(vmx):
+            _safe_progress(progress, "VMware Tools 준비 완료(단일 체크)")
+    except Exception:
+        pass
+    _safe_progress(progress, "IP 획득 중")
+    ip = wait_for_vm_ready(
+        vmx,
+        timeout=timeout,
+        probe_interval=probe_interval,
+        on_progress=progress_cb,
+    )
+    _safe_progress(progress, "RDP 준비 대기 중")
+    if not wait_for_rdp_ready(vmx, ip, on_progress=progress_cb):
+        _safe_progress(progress, "RDP 대기 초과 – 네트워크 재협상")
+        renew_network(vmx, on_progress=progress_cb)
+        _safe_progress(progress, "RDP 재대기")
+        wait_for_rdp_ready(vmx, ip, on_progress=progress_cb)
+    if not is_preferred_ip(ip):
+        _safe_progress(progress, "예상치 않은 IP – 네트워크 재협상")
+        renew_network(vmx, on_progress=progress_cb)
+        ip = wait_for_vm_ready(
+            vmx,
+            timeout=timeout,
+            probe_interval=probe_interval,
+            on_progress=progress_cb,
+        )
+    return ip, initial_running
 
 
 def create_app(config_module=None) -> FastAPI:
@@ -240,25 +269,36 @@ def create_app(config_module=None) -> FastAPI:
     def rdp_active(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
         try:
-            active = bool(has_active_rdp_connections_tcp(vmx))
+            if not is_vm_running(vmx):
+                return {"vm": vm, "active": False, "status": "none"}
+            active, _clients, status = probe_rdp_usage(vmx)
         except Exception:
             active = False
-        return {"vm": vm, "active": active}
+            status = "error"
+        return {"vm": vm, "active": bool(active), "status": status}
 
     @app.get("/rdp_used")
     def rdp_used(vm: str = "init"):
         vmx = _vmx_from_name_local(vm)
         try:
-            active = bool(has_active_rdp_connections_tcp(vmx))
+            if not is_vm_running(vmx):
+                return {
+                    "vm": vm,
+                    "active": False,
+                    "clients": [],
+                    "status": "none",
+                }
+            active, clients, status = probe_rdp_usage(vmx)
         except Exception:
             active = False
-        clients: list[str] = []
-        if active:
-            try:
-                clients = get_active_rdp_usernames_best(vmx)
-            except Exception:
-                clients = []
-        return {"vm": vm, "active": active, "clients": clients}
+            clients = []
+            status = "error"
+        return {
+            "vm": vm,
+            "active": bool(active),
+            "clients": clients,
+            "status": status,
+        }
 
 
     @app.get("/vm_state")
@@ -271,25 +311,21 @@ def create_app(config_module=None) -> FastAPI:
     def revert(payload: RevertRequest) -> RevertResponse:
         start_ts = time.perf_counter()
         vmx = _vmx_from_name_local(payload.vm)
-        try:
-            active_clients = get_active_rdp_remote_ips(vmx)
-        except Exception:
-            active_clients = []
+        active_clients = _active_rdp_clients(vmx)
         if active_clients:
             raise HTTPException(409, detail=f"Active RDP clients detected ({', '.join(active_clients)}); revert is blocked.")
         snaps = list_snapshots(vmx)
         if payload.snapshot not in snaps:
             raise HTTPException(404, f"Snapshot '{payload.snapshot}' not found.")
-        run_vmrun(["revertToSnapshot", str(vmx), payload.snapshot], timeout=60)
-        ensure_vm_running(vmx, timeout=60)
-        try:
-            wait_for_tools_ready(vmx, timeout=60)
-        except Exception:
-            pass
         probe, tout = _calc_poll_params(payload.vm, "revert")
-        fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe)
-        renew_network(vmx)
-        ip_addr = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe)
+        ip_addr = _run_revert_pipeline(
+            vmx,
+            payload.vm,
+            payload.snapshot,
+            probe,
+            tout,
+            progress=None,
+        )
         durations.record_duration(f"{payload.vm}_revert", time.perf_counter() - start_ts)
         return RevertResponse(vm=payload.vm, snapshot=payload.snapshot, ip=ip_addr)
 
@@ -298,40 +334,27 @@ def create_app(config_module=None) -> FastAPI:
         try:
             task.status = "running"
             task.started = time.time()
-            task.progress = "스냅샷 복구 중"
+            progress_cb = _task_progress_writer(task)
+            progress_cb("스냅샷 복구 중")
             vmx = _vmx_from_name_local(vm)
-            try:
-                active_clients = get_active_rdp_remote_ips(vmx)
-            except Exception:
-                active_clients = []
+            active_clients = _active_rdp_clients(vmx)
             if active_clients:
                 task.status = "failed"
                 task.error = f"Active RDP clients detected ({', '.join(active_clients)}); revert is blocked."
                 task.finished = time.time()
                 return
-            run_vmrun(["revertToSnapshot", str(vmx), snap], timeout=60)
-            ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
-            try:
-                task.progress = "Tools 대기 중"
-                wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
-            except Exception:
-                pass
-            task.progress = "IP 획득 중"
             probe, tout = _calc_poll_params(vm, "revert")
-            ip = fast_wait_for_ip(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-            task.progress = f"IP(1차)={ip} – 네트워크 재협상 중"
-            renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-            task.progress = "IP 재확인(2차)"
-            ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-            try:
-                socket.create_connection((ip, 3389), timeout=3).close()
-            except Exception:
-                task.progress = "RDP 대기 초과 – 네트워크 재협상"
-                renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-                ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
+            ip = _run_revert_pipeline(
+                vmx,
+                vm,
+                snap,
+                probe,
+                tout,
+                progress_cb,
+            )
             task.ip = ip
             task.status = "done"
-            task.progress = "완료"
+            progress_cb("완료")
             task.finished = time.time()
             durations.record_duration(f"{vm}_revert", task.finished - task.started)
         except Exception as exc:
@@ -351,31 +374,20 @@ def create_app(config_module=None) -> FastAPI:
         try:
             task.status = "running"
             task.started = time.time()
-            task.progress = "전원 상태 확인 중"
+            progress_cb = _task_progress_writer(task)
+            progress_cb("전원 상태 확인 중")
             vmx = _vmx_from_name_local(vm)
-            ensure_vm_running(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
-            was_running = True
-            try:
-                task.progress = "Tools 대기 중"
-                wait_for_tools_ready(vmx, timeout=60, on_progress=lambda m: setattr(task, "progress", m))
-            except Exception:
-                pass
-            task.progress = "IP 획득 중"
             probe, tout = _calc_poll_params(vm, "connect")
-            ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
-            task.progress = "RDP 준비 대기 중"
-            if not wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m)):
-                task.progress = "RDP 대기 초과 – 네트워크 재협상"
-                renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-                task.progress = "RDP 재대기"
-                wait_for_rdp_ready(vmx, ip, on_progress=lambda m: setattr(task, "progress", m))
-            if not is_preferred_ip(ip):
-                task.progress = "예상치 않은 IP – 네트워크 재협상"
-                renew_network(vmx, on_progress=lambda m: setattr(task, "progress", m))
-                ip = wait_for_vm_ready(vmx, timeout=tout, probe_interval=probe, on_progress=lambda m: setattr(task, "progress", m))
+            ip, was_running = _run_connect_pipeline(
+                vmx,
+                vm,
+                probe,
+                tout,
+                progress_cb,
+            )
             task.ip = ip
             task.status = "done"
-            task.progress = "완료"
+            progress_cb("완료")
             task.finished = time.time()
             key = f"{vm}_connect_warm" if was_running else f"{vm}_connect_cold"
             durations.record_duration(key, task.finished - task.started)
